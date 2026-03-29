@@ -121,14 +121,10 @@ bool isWordCharacter(uint32_t cp) {
 
 }  // namespace
 
-void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
-                         const bool attachToPrevious) {
+void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool attachToPrevious) {
   if (word.empty()) return;
 
   EpdFontFamily::Style baseStyle = fontStyle;
-  if (underline) {
-    baseStyle = static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::UNDERLINE);
-  }
   const bool wordStartsRtl = !hasRtlWord && mayContainRtlBytes(word.c_str()) &&
                              BidiUtils::startsWithRtl(word.c_str(), RTL_PER_WORD_PROBE_DEPTH);
 
