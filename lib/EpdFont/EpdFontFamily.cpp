@@ -1,7 +1,7 @@
 #include "EpdFontFamily.h"
 
 const EpdFont* EpdFontFamily::getFont(const Style style) const {
-  // Extract font style bits (ignore UNDERLINE bit for font selection)
+  // Extract font style bits; decoration/positioning flags do not affect font selection.
   const bool hasBold = (style & BOLD) != 0;
   const bool hasItalic = (style & ITALIC) != 0;
 
