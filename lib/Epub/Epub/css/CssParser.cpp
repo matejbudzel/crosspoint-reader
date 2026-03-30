@@ -253,10 +253,18 @@ CssFontWeight CssParser::interpretFontWeight(std::string_view val) {
 
 CssTextDecoration CssParser::interpretDecoration(std::string_view val) {
   // text-decoration can have multiple space-separated values
+  CssTextDecoration decorationRes = CssTextDecoration::None;
+  if (icontainsAscii(val, "none")) return decorationRes;
   if (icontainsAscii(val, "underline")) {
-    return CssTextDecoration::Underline;
+    decorationRes = decorationRes | CssTextDecoration::Underline;
   }
-  return CssTextDecoration::None;
+  if (icontainsAscii(val, "line-through")) {
+    decorationRes = decorationRes | CssTextDecoration::LineThrough;
+  }
+  if (icontainsAscii(val, "overline")) {
+    decorationRes = decorationRes | CssTextDecoration::Overline;
+  }
+  return decorationRes;
 }
 
 CssLength CssParser::interpretLength(std::string_view val) {

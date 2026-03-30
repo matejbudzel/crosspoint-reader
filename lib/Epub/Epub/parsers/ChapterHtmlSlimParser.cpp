@@ -34,6 +34,7 @@ constexpr const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
 constexpr const char* BOLD_TAGS[] = {"b", "strong"};
 constexpr const char* ITALIC_TAGS[] = {"i", "em"};
 constexpr const char* UNDERLINE_TAGS[] = {"u", "ins"};
+constexpr const char* STRIKETHROUGH_TAGS[] = {"del", "s", "strike"};
 constexpr const char* IMAGE_TAGS[] = {"img"};
 constexpr const char* SKIP_TAGS[] = {"head"};
 
@@ -82,6 +83,20 @@ bool isTableStructuralTag(const char* name) {
   return strcmp(name, "table") == 0 || strcmp(name, "tr") == 0 || strcmp(name, "td") == 0 || strcmp(name, "th") == 0;
 }
 
+EpdFontFamily::Style cssTextDecorationToFontStyle(const CssTextDecoration decoration) {
+  auto style = EpdFontFamily::REGULAR;
+  if (cssTextDecorationIncludes(decoration, CssTextDecoration::Underline)) {
+    style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::UNDERLINE);
+  }
+  if (cssTextDecorationIncludes(decoration, CssTextDecoration::LineThrough)) {
+    style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::STRIKETHROUGH);
+  }
+  if (cssTextDecorationIncludes(decoration, CssTextDecoration::Overline)) {
+    style = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::OVERLINE);
+  }
+  return style;
+}
+
 void ChapterHtmlSlimParser::applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css) {
   if (css.hasDirection()) {
     entry.hasDirection = true;
@@ -89,13 +104,13 @@ void ChapterHtmlSlimParser::applyDirectionToEntry(StyleStackEntry& entry, const 
   }
 }
 
-// Update effective bold/italic/underline based on block style and inline style stack
+// Update effective inline text style based on block style and inline style stack.
 void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   // Start with block-level styles
   effectiveBold = currentCssStyle.hasFontWeight() && currentCssStyle.fontWeight == CssFontWeight::Bold;
   effectiveItalic = currentCssStyle.hasFontStyle() && currentCssStyle.fontStyle == CssFontStyle::Italic;
-  effectiveUnderline =
-      currentCssStyle.hasTextDecoration() && currentCssStyle.textDecoration == CssTextDecoration::Underline;
+  effectiveTextDecoration =
+      currentCssStyle.hasTextDecoration() ? currentCssStyle.textDecoration : CssTextDecoration::None;
   effectiveDirectionDefined = currentCssStyle.hasDirection();
   effectiveDirection = currentCssStyle.direction;
   effectiveSup = false;
@@ -109,8 +124,10 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     if (entry.hasItalic) {
       effectiveItalic = entry.italic;
     }
-    if (entry.hasUnderline) {
-      effectiveUnderline = entry.underline;
+    // Note: line decorators are propagated to children regardless conflicting styling
+    // https://www.w3.org/TR/css-text-decor-3/#line-decoration
+    if (entry.hasTextDecoration) {
+      effectiveTextDecoration = effectiveTextDecoration | entry.textDecoration;
     }
     if (entry.hasDirection) {
       effectiveDirectionDefined = true;
@@ -164,7 +181,6 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // Determine font style from depth-based tracking and CSS effective style
   const bool isBold = boldUntilDepth < depth || effectiveBold;
   const bool isItalic = italicUntilDepth < depth || effectiveItalic;
-  const bool isUnderline = underlineUntilDepth < depth || effectiveUnderline;
 
   // Combine style flags using bitwise OR
   EpdFontFamily::Style fontStyle = EpdFontFamily::REGULAR;
@@ -174,9 +190,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   if (isItalic) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::ITALIC);
   }
-  if (isUnderline) {
-    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::UNDERLINE);
-  }
+  fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | cssTextDecorationToFontStyle(effectiveTextDecoration));
   if (effectiveSup) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUP);
   } else if (effectiveSub) {
@@ -412,8 +426,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     headerStyle.bold = false;
     headerStyle.hasItalic = true;
     headerStyle.italic = true;
-    headerStyle.hasUnderline = true;
-    headerStyle.underline = false;
+    headerStyle.hasTextDecoration = true;
+    headerStyle.textDecoration = CssTextDecoration::None;
     self->inlineStyleStack.push_back(headerStyle);
     self->updateEffectiveInlineStyle();
     self->characterData(userData, headerText.c_str(), static_cast<int>(headerText.length()));
@@ -753,12 +767,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->currentFootnoteLinkTextLen = 0;
 
       // Apply underline style to visually indicate the link
-      self->underlineUntilDepth = std::min(self->underlineUntilDepth, self->depth);
       StyleStackEntry entry;
       entry.depth = self->depth;
-      entry.hasUnderline = true;
-      entry.underline = true;
-      applyDirectionToEntry(entry, cssStyle);
+      // Maintain underline despite author-styling cascade rules as links have no other visual indicator.
+      entry.hasTextDecoration = true;
+      entry.textDecoration = CssTextDecoration::Underline;
+      ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
 
@@ -829,12 +843,42 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->flushPartWordBuffer();
       self->nextWordContinues = true;
     }
-    self->underlineUntilDepth = std::min(self->underlineUntilDepth, self->depth);
+
     // Push inline style entry for underline tag
     StyleStackEntry entry;
     entry.depth = self->depth;  // Track depth for matching pop
-    entry.hasUnderline = true;
-    entry.underline = true;
+    entry.hasTextDecoration = true;
+
+    // Note: user-defined text-decorator overrides user-agent styling (TODO: precedence reversed w !important)
+    // https://www.w3.org/TR/css-cascade-5/#cascade-sort
+    entry.textDecoration = cssStyle.hasTextDecoration() ? cssStyle.textDecoration : CssTextDecoration::Underline;
+
+    if (cssStyle.hasFontWeight()) {
+      entry.hasBold = true;
+      entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
+    }
+    if (cssStyle.hasFontStyle()) {
+      entry.hasItalic = true;
+      entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
+    }
+    self->inlineStyleStack.push_back(entry);
+    self->updateEffectiveInlineStyle();
+  } else if (matches(name, STRIKETHROUGH_TAGS, std::size(STRIKETHROUGH_TAGS))) {
+    // Flush buffer before style change so preceding text gets current style
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+      self->nextWordContinues = true;
+    }
+
+    // Push inline style entry for linethrough tag
+    StyleStackEntry entry;
+    entry.depth = self->depth;  // Track depth for matching pop
+    entry.hasTextDecoration = true;
+
+    // Note: user-defined text-decorator overrides user-agent styling (TODO: precedence reversed w !important)
+    // https://www.w3.org/TR/css-cascade-5/#cascade-sort
+    entry.textDecoration = cssStyle.hasTextDecoration() ? cssStyle.textDecoration : CssTextDecoration::LineThrough;
+
     if (cssStyle.hasFontWeight()) {
       entry.hasBold = true;
       entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
@@ -863,8 +907,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
     }
     if (cssStyle.hasTextDecoration()) {
-      entry.hasUnderline = true;
-      entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+      entry.hasTextDecoration = true;
+      entry.textDecoration = entry.textDecoration | cssStyle.textDecoration;
     }
     applyDirectionToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
@@ -886,8 +930,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       entry.bold = cssStyle.fontWeight == CssFontWeight::Bold;
     }
     if (cssStyle.hasTextDecoration()) {
-      entry.hasUnderline = true;
-      entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+      entry.hasTextDecoration = true;
+      entry.textDecoration = entry.textDecoration | cssStyle.textDecoration;
     }
     applyDirectionToEntry(entry, cssStyle);
     self->inlineStyleStack.push_back(entry);
@@ -928,8 +972,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         entry.italic = cssStyle.fontStyle == CssFontStyle::Italic;
       }
       if (cssStyle.hasTextDecoration()) {
-        entry.hasUnderline = true;
-        entry.underline = cssStyle.textDecoration == CssTextDecoration::Underline;
+        entry.hasTextDecoration = true;
+        entry.textDecoration = cssStyle.textDecoration;
       }
       applyDirectionToEntry(entry, cssStyle);
       if (cssStyle.hasVerticalAlign()) {
@@ -1142,9 +1186,8 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       !self->inlineStyleStack.empty() && self->inlineStyleStack.back().depth == self->depth - 1;
   const bool willClearBold = self->boldUntilDepth == self->depth - 1;
   const bool willClearItalic = self->italicUntilDepth == self->depth - 1;
-  const bool willClearUnderline = self->underlineUntilDepth == self->depth - 1;
 
-  const bool styleWillChange = willPopStyleStack || willClearBold || willClearItalic || willClearUnderline;
+  const bool styleWillChange = willPopStyleStack || willClearBold || willClearItalic;
   const bool headerOrBlockTag = isHeaderOrBlock(name);
   const bool tableStructuralTag = isTableStructuralTag(name);
 
@@ -1163,7 +1206,8 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
                              !matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS)) && self->depth != 1;
     const bool shouldFlush = styleWillChange || headerOrBlockTag || matches(name, BOLD_TAGS, std::size(BOLD_TAGS)) ||
                              matches(name, ITALIC_TAGS, std::size(ITALIC_TAGS)) ||
-                             matches(name, UNDERLINE_TAGS, std::size(UNDERLINE_TAGS)) || tableStructuralTag ||
+                             matches(name, UNDERLINE_TAGS, std::size(UNDERLINE_TAGS)) ||
+                             matches(name, STRIKETHROUGH_TAGS, std::size(STRIKETHROUGH_TAGS)) || tableStructuralTag ||
                              matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS)) || self->depth == 1;
 
     if (shouldFlush) {
@@ -1220,11 +1264,6 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   // Leaving italic tag
   if (self->italicUntilDepth == self->depth) {
     self->italicUntilDepth = INT_MAX;
-  }
-
-  // Leaving underline tag
-  if (self->underlineUntilDepth == self->depth) {
-    self->underlineUntilDepth = INT_MAX;
   }
 
   // Pop from inline style stack if we pushed an entry at this depth

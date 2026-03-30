@@ -31,7 +31,6 @@ class ChapterHtmlSlimParser {
   int skipUntilDepth = INT_MAX;
   int boldUntilDepth = INT_MAX;
   int italicUntilDepth = INT_MAX;
-  int underlineUntilDepth = INT_MAX;
   // buffer for building up words from characters, will auto break if longer than this
   // leave one char at end for null pointer
   char partWordBuffer[MAX_WORD_SIZE + 1] = {};
@@ -60,7 +59,8 @@ class ChapterHtmlSlimParser {
     int depth = 0;
     bool hasBold = false, bold = false;
     bool hasItalic = false, italic = false;
-    bool hasUnderline = false, underline = false;
+    bool hasTextDecoration = false;
+    CssTextDecoration textDecoration = CssTextDecoration::None;
     bool hasDirection = false;
     CssTextDirection direction = CssTextDirection::Ltr;
     bool hasSup = false, sup = false;
@@ -71,7 +71,7 @@ class ChapterHtmlSlimParser {
   CssStyle currentCssStyle;
   bool effectiveBold = false;
   bool effectiveItalic = false;
-  bool effectiveUnderline = false;
+  CssTextDecoration effectiveTextDecoration = CssTextDecoration::None;
   bool effectiveDirectionDefined = false;
   CssTextDirection effectiveDirection = CssTextDirection::Ltr;
   bool effectiveSup = false;

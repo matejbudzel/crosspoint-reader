@@ -21,6 +21,35 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
 
   const bool scanning = renderer.isFontCacheScanning();
   const int ascender = renderer.getFontAscenderSize(fontId);
+  const int yUnderline = y + ascender + 2;
+  const int yOverline = y + ascender / 5;
+  const int yStrikethrough = y + ascender * 4 / 5;
+
+  struct DecorationLineTracker {
+    int startX = -1;
+    int endX = -1;
+    EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+    int yPos = 0;
+
+    void reset() {
+      startX = -1;
+      endX = -1;
+    }
+  };
+
+  DecorationLineTracker decos[] = {
+      {-1, -1, EpdFontFamily::UNDERLINE, yUnderline},
+      {-1, -1, EpdFontFamily::OVERLINE, yOverline},
+      {-1, -1, EpdFontFamily::STRIKETHROUGH, yStrikethrough},
+  };
+
+  auto flushDeco = [&](DecorationLineTracker& deco) {
+    if (deco.startX != -1) {
+      renderer.drawLine(deco.startX, deco.yPos, deco.endX, deco.yPos, 2, true);
+      deco.reset();
+    }
+  };
+
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = wordXpos[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyles[i];
@@ -59,18 +88,39 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       renderer.drawText(fontId, wordX, wordY, words[i].c_str(), true, currentStyle, baseDir);
     }
 
-    if (!scanning && (currentStyle & EpdFontFamily::UNDERLINE) != 0) {
+    if (!scanning && EpdFontFamily::hasDecoration(currentStyle)) {
       const std::string& w = words[i];
-      int underlineWidth = renderer.getTextWidth(fontId, w.c_str(), currentStyle, baseDir);
-      const int underlineY = wordY + ascender + 2;
+      const int fullWordWidth = renderer.getTextWidth(fontId, w.c_str(), currentStyle, baseDir);
 
+      int startX = wordX;
+      int lineWidth = fullWordWidth;
+
+      // if word starts with em-space ("\xe2\x80\x83"), account for the additional indent before drawing the line
+      if (w.size() >= 3 && static_cast<uint8_t>(w[0]) == 0xE2 && static_cast<uint8_t>(w[1]) == 0x80 &&
+          static_cast<uint8_t>(w[2]) == 0x83) {
+        const char* visiblePtr = w.c_str() + 3;
+        const int prefixWidth = renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", currentStyle);
+        const int visibleWidth = renderer.getTextWidth(fontId, visiblePtr, currentStyle, baseDir);
+        startX = wordX + prefixWidth;
+        lineWidth = visibleWidth;
+      }
       if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
-        underlineWidth = (underlineWidth + 1) / 2;
+        lineWidth = (lineWidth + 1) / 2;
       }
 
-      renderer.drawLine(wordX, underlineY, wordX + underlineWidth, underlineY, true);
+      for (auto& deco : decos) {
+        if (currentStyle & deco.style) {
+          if (deco.startX == -1) deco.startX = startX;
+          deco.endX = startX + lineWidth;
+        } else {
+          flushDeco(deco);
+        }
+      }
+    } else {
+      for (auto& deco : decos) flushDeco(deco);
     }
   }
+  for (auto& deco : decos) flushDeco(deco);
 }
 
 bool TextBlock::serialize(HalFile& file) const {

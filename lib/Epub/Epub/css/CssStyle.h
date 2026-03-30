@@ -56,15 +56,15 @@ enum class CssFontWeight : uint8_t { Normal = 0, Bold = 1 };
 // such as "underline line-through", so store these as bit flags.
 enum class CssTextDecoration : uint8_t { None = 0, Underline = 1, LineThrough = 2, Overline = 4 };
 
-inline CssTextDecoration operator|(const CssTextDecoration lhs, const CssTextDecoration rhs) {
+constexpr CssTextDecoration operator|(const CssTextDecoration lhs, const CssTextDecoration rhs) {
   return static_cast<CssTextDecoration>(static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
 }
 
-inline CssTextDecoration operator&(const CssTextDecoration lhs, const CssTextDecoration rhs) {
+constexpr CssTextDecoration operator&(const CssTextDecoration lhs, const CssTextDecoration rhs) {
   return static_cast<CssTextDecoration>(static_cast<uint8_t>(lhs) & static_cast<uint8_t>(rhs));
 }
 
-inline bool cssTextDecorationIncludes(const CssTextDecoration value, const CssTextDecoration flag) {
+constexpr bool cssTextDecorationIncludes(const CssTextDecoration value, const CssTextDecoration flag) {
   return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
 }
 
