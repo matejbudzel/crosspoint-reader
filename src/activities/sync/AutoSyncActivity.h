@@ -34,6 +34,7 @@ class AutoSyncActivity final : public Activity {
   bool parseJobsFile(const char* json);
   void fetchSelected();
   void fetchAll();
+  void openLog();
   bool fetchJob(size_t index);
   bool validateJob(const Job& job, std::string& error) const;
   void appendLog(const std::string& line);
