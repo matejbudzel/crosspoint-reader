@@ -1,0 +1,52 @@
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include "activities/Activity.h"
+#include "network/HttpDownloader.h"
+#include "util/ButtonNavigator.h"
+
+class AutoSyncActivity final : public Activity {
+  enum class State {
+    Loading,
+    Ready,
+    Fetching,
+    Error,
+  };
+
+  struct Job {
+    std::string url;
+    std::string path;
+    uint32_t intervalMinutes = 0;
+    std::string status;
+  };
+
+  ButtonNavigator buttonNavigator;
+  State state_ = State::Loading;
+  std::vector<Job> jobs_;
+  int selectedIndex_ = 0;
+  std::string message_;
+  size_t currentJob_ = 0;
+  size_t totalJobs_ = 0;
+
+  void loadJobs();
+  bool parseJobsFile(const char* json);
+  void fetchSelected();
+  void fetchAll();
+  bool fetchJob(size_t index);
+  bool validateJob(const Job& job, std::string& error) const;
+  void appendLog(const std::string& line);
+  std::string menuTitle(int index) const;
+  std::string menuSubtitle(int index) const;
+  std::string menuValue(int index) const;
+
+ public:
+  explicit AutoSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+      : Activity("AutoSync", renderer, mappedInput) {}
+
+  void onEnter() override;
+  void loop() override;
+  void render(RenderLock&&) override;
+  bool preventAutoSleep() override { return state_ == State::Fetching; }
+};
