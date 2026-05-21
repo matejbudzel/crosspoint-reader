@@ -235,3 +235,75 @@ and no timed wake from deep sleep.
 The service can exist while awake, but in v1 it should coordinate state and expose status rather than launching hidden network work during normal foreground use. Scheduled network work belongs to soft sleep only.
 
 That gives a working foundation without fighting the device’s power model.
+
+## Implementation Plan
+
+Implement this in small commits.
+
+### Commit 1: Shared Network Stack
+
+Goal: make new network use go through one common path before Auto Sync exists.
+
+Scope:
+
+- Add a small `NetworkManager` / `NetworkSession` abstraction.
+- Use existing `WifiCredentialStore`.
+- Connect to known networks, preferably last-connected SSID first.
+- Track ownership/busy state so only one network operation owns WiFi.
+- Let foreground/manual callers claim network explicitly.
+- Let background/scheduled callers fail or defer when network is busy.
+- Keep existing `HttpDownloader`; do not reinvent HTTP.
+- Do not migrate every existing network feature yet. First commit can add the shared system and wire enough of it for Auto Sync.
+
+Important v1 behavior:
+
+- Manual Auto Sync should not run concurrently with any existing network activity.
+- If the network is busy, the Auto Sync UI should show "network busy" and let the user retry.
+- This keeps the first implementation debuggable and matches the lessons from prior rejected auto-sync PRs.
+
+### Commit 2: Minimal Manual Auto Sync
+
+Goal: prove the useful path: read jobs, show jobs, fetch manually.
+
+Scope:
+
+- Add `AutoSyncActivity`.
+- Use the hardcoded jobs file `/.crosspoint/auto-sync.json`.
+- Parse JSON jobs:
+  - `url`
+  - `path`
+  - `intervalMinutes`, parsed/displayed but not scheduled yet
+- UI lists jobs from the file.
+- Actions:
+  - Fetch selected job now.
+  - Fetch all jobs now.
+  - Reload jobs file.
+- Use the shared network stack from commit 1.
+- Use existing `HttpDownloader`.
+- Download to a temporary path, then replace destination on success.
+- Append simple log lines to `/.crosspoint/auto-sync.log`.
+
+Explicitly out of scope for this commit:
+
+- Settings screen.
+- Sleep behavior.
+- Scheduler.
+- Status overlay.
+- Built-in log viewer.
+- Log deletion button.
+
+The log can be inspected as a normal SD-card file for now. A later UI should include a button to delete/drop Auto Sync logs.
+
+### Later Commits
+
+- Settings section:
+  - Enable/disable feature.
+  - Soft sleep toggle.
+  - Log rotation length.
+- Home entry only when enabled.
+- Firmware soft-sleep scheduler.
+- Status/header sync glyph.
+- Better status persistence.
+- Log viewer.
+- Button to delete/drop all Auto Sync logs.
+- HTTP validators: ETag / Last-Modified / unchanged detection.
