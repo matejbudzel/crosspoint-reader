@@ -107,6 +107,13 @@ NetworkSession CrossPointNetworkManager::claim(const char* owner, NetworkClaimMo
 
 bool CrossPointNetworkManager::isBusy() const { return !owner_.empty() || isExternallyActive(); }
 
+std::string CrossPointNetworkManager::connectedSsid() const {
+  if (WiFi.status() != WL_CONNECTED) {
+    return "";
+  }
+  return WiFi.SSID().c_str();
+}
+
 NetworkConnectResult CrossPointNetworkManager::connectKnownNetwork(const std::string& owner,
                                                                    uint32_t timeoutPerNetworkMs) {
   if (owner.empty() || owner != owner_) {

@@ -104,6 +104,7 @@ Example:
   "version": 1,
   "jobs": [
     {
+      "name": "Example book",
       "url": "https://example.com/feed/book.epub",
       "path": "/books/book.epub",
       "intervalMinutes": 360
@@ -112,7 +113,7 @@ Example:
 }
 ```
 
-Later-compatible fields could be `enabled`, `name`, `etag`, `ifModifiedSince`, `maxBytes`.
+Later-compatible fields could be `enabled`, `etag`, `ifModifiedSince`, `maxBytes`.
 
 V1 does not support auth for data sources.
 
@@ -270,6 +271,7 @@ Scope:
 - Add `AutoSyncActivity`.
 - Use the hardcoded jobs file `/.crosspoint/auto-sync.json`.
 - Parse JSON jobs:
+  - `name`, optional display name
   - `url`
   - `path`
   - `intervalMinutes`, parsed/displayed but not scheduled yet

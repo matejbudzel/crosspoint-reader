@@ -5,6 +5,7 @@
 
 #include "activities/Activity.h"
 #include "network/HttpDownloader.h"
+#include "network/CrossPointNetworkManager.h"
 #include "util/ButtonNavigator.h"
 
 class AutoSyncActivity final : public Activity {
@@ -16,6 +17,7 @@ class AutoSyncActivity final : public Activity {
   };
 
   struct Job {
+    std::string name;
     std::string url;
     std::string path;
     uint32_t intervalMinutes = 0;
@@ -27,17 +29,22 @@ class AutoSyncActivity final : public Activity {
   std::vector<Job> jobs_;
   int selectedIndex_ = 0;
   std::string message_;
+  std::string connectedSsid_;
   size_t currentJob_ = 0;
   size_t totalJobs_ = 0;
+  size_t downloadProgress_ = 0;
+  size_t downloadTotal_ = 0;
 
   void loadJobs();
   bool parseJobsFile(const char* json);
   void fetchSelected();
   void fetchAll();
   void openLog();
-  bool fetchJob(size_t index);
+  bool fetchJob(size_t index, NetworkSession& session);
+  bool connectForFetch(NetworkSession& session);
   bool validateJob(const Job& job, std::string& error) const;
   void appendLog(const std::string& line);
+  std::string jobDisplayName(const Job& job) const;
   std::string menuTitle(int index) const;
   std::string menuSubtitle(int index) const;
   std::string menuValue(int index) const;

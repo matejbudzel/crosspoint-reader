@@ -49,6 +49,7 @@ class CrossPointNetworkManager {
   NetworkSession claim(const char* owner, NetworkClaimMode mode = NetworkClaimMode::Foreground);
   bool isBusy() const;
   const std::string& currentOwner() const { return owner_; }
+  std::string connectedSsid() const;
 
  private:
   friend class NetworkSession;

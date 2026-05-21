@@ -107,6 +107,7 @@ bool AutoSyncActivity::parseJobsFile(const char* json) {
   jobs_.reserve(jobs.size());
   for (JsonObject item : jobs) {
     Job job;
+    job.name = item["name"] | "";
     job.url = item["url"] | "";
     job.path = item["path"] | "";
     job.intervalMinutes = item["intervalMinutes"] | 0;
@@ -161,14 +162,61 @@ void AutoSyncActivity::fetchSelected() {
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return;
   }
-  fetchJob(static_cast<size_t>(jobIndex));
+
+  NetworkSession session = NETWORK_MANAGER.claim("AutoSync", NetworkClaimMode::Foreground);
+  if (!session.isActive()) {
+    jobs_[jobIndex].status = "Network busy";
+    message_ = "Network busy";
+    appendLog("Network busy for " + jobs_[jobIndex].url);
+    requestUpdate();
+    return;
+  }
+
+  state_ = State::Fetching;
+  currentJob_ = 1;
+  totalJobs_ = 1;
+  if (!connectForFetch(session)) {
+    session.disconnect();
+    state_ = State::Ready;
+    requestUpdate();
+    return;
+  }
+
+  fetchJob(static_cast<size_t>(jobIndex), session);
+  session.disconnect();
+  state_ = State::Ready;
+  requestUpdate();
 }
 
 void AutoSyncActivity::fetchAll() {
+  if (jobs_.empty()) {
+    message_ = "No jobs in file";
+    requestUpdate();
+    return;
+  }
+
+  NetworkSession session = NETWORK_MANAGER.claim("AutoSync", NetworkClaimMode::Foreground);
+  if (!session.isActive()) {
+    message_ = "Network busy";
+    appendLog("Network busy for fetch all");
+    requestUpdate();
+    return;
+  }
+
+  state_ = State::Fetching;
+  currentJob_ = 0;
+  totalJobs_ = jobs_.size();
+  if (!connectForFetch(session)) {
+    session.disconnect();
+    state_ = State::Ready;
+    requestUpdate();
+    return;
+  }
+
   size_t fetched = 0;
   size_t failed = 0;
   for (size_t i = 0; i < jobs_.size(); ++i) {
-    if (fetchJob(i)) {
+    if (fetchJob(i, session)) {
       fetched++;
     } else {
       failed++;
@@ -177,6 +225,7 @@ void AutoSyncActivity::fetchAll() {
   char summary[48];
   snprintf(summary, sizeof(summary), "Done: %lu OK, %lu failed", static_cast<unsigned long>(fetched),
            static_cast<unsigned long>(failed));
+  session.disconnect();
   message_ = summary;
   state_ = State::Ready;
   requestUpdate();
@@ -199,8 +248,34 @@ void AutoSyncActivity::openLog() {
   onSelectBook(LOG_VIEW_FILE);
 }
 
-bool AutoSyncActivity::fetchJob(size_t index) {
+bool AutoSyncActivity::connectForFetch(NetworkSession& session) {
+  connectedSsid_.clear();
+  downloadProgress_ = 0;
+  downloadTotal_ = 0;
+  message_ = "Connecting WiFi";
+  requestUpdateAndWait();
+
+  const NetworkConnectResult connectResult = session.connectKnownNetwork();
+  if (connectResult != NetworkConnectResult::Connected) {
+    message_ = connectResult == NetworkConnectResult::NoCredentials ? "No WiFi credentials" : "WiFi failed";
+    appendLog("Connection failed: " + message_);
+    return false;
+  }
+
+  const std::string ssid = NETWORK_MANAGER.connectedSsid();
+  connectedSsid_ = ssid.empty() ? "" : "WiFi: " + ssid;
+  message_ = connectedSsid_.empty() ? "WiFi connected" : connectedSsid_;
+  requestUpdateAndWait();
+  return true;
+}
+
+bool AutoSyncActivity::fetchJob(size_t index, NetworkSession& session) {
   if (index >= jobs_.size()) {
+    return false;
+  }
+  if (!session.isActive()) {
+    message_ = "Network busy";
+    requestUpdate();
     return false;
   }
 
@@ -214,39 +289,14 @@ bool AutoSyncActivity::fetchJob(size_t index) {
     return false;
   }
 
-  NetworkSession session = NETWORK_MANAGER.claim("AutoSync", NetworkClaimMode::Foreground);
-  if (!session.isActive()) {
-    job.status = "Network busy";
-    message_ = "Network busy";
-    appendLog("Network busy for " + job.url);
-    requestUpdate();
-    return false;
-  }
-
   state_ = State::Fetching;
   currentJob_ = index + 1;
   totalJobs_ = jobs_.size();
-  job.status = "Connecting";
-  message_ = "Connecting";
-  requestUpdateAndWait();
-
-  const NetworkConnectResult connectResult = session.connectKnownNetwork();
-  if (connectResult != NetworkConnectResult::Connected) {
-    session.disconnect();
-    job.status = connectResult == NetworkConnectResult::NoCredentials ? "No WiFi credentials" : "WiFi failed";
-    message_ = job.status;
-    appendLog("Connection failed for " + job.url + ": " + job.status);
-    state_ = State::Ready;
-    requestUpdate();
-    return false;
-  }
 
   if (!ensureParentDirectory(job.path)) {
-    session.disconnect();
     job.status = "Directory error";
     message_ = job.status;
     appendLog("Failed to create directory for " + job.path);
-    state_ = State::Ready;
     requestUpdate();
     return false;
   }
@@ -255,17 +305,24 @@ bool AutoSyncActivity::fetchJob(size_t index) {
   Storage.remove(tempPath.c_str());
 
   job.status = "Downloading";
-  message_ = "Downloading";
+  message_ = "Downloading " + jobDisplayName(job);
+  downloadProgress_ = 0;
+  downloadTotal_ = 0;
   requestUpdateAndWait();
 
-  const auto result = HttpDownloader::downloadToFile(job.url, tempPath);
+  const auto result = HttpDownloader::downloadToFile(
+      job.url, tempPath,
+      [this](size_t downloaded, size_t total) {
+        downloadProgress_ = downloaded;
+        downloadTotal_ = total;
+        requestUpdate(true);
+      },
+      nullptr);
   if (result != HttpDownloader::OK) {
-    session.disconnect();
     Storage.remove(tempPath.c_str());
     job.status = downloadErrorText(result);
     message_ = job.status;
     appendLog("Download failed for " + job.url + " -> " + job.path + ": " + job.status);
-    state_ = State::Ready;
     requestUpdate();
     return false;
   }
@@ -274,21 +331,18 @@ bool AutoSyncActivity::fetchJob(size_t index) {
     Storage.remove(job.path.c_str());
   }
   if (!Storage.rename(tempPath.c_str(), job.path.c_str())) {
-    session.disconnect();
     Storage.remove(tempPath.c_str());
     job.status = "Replace failed";
     message_ = job.status;
     appendLog("Replace failed for " + job.path);
-    state_ = State::Ready;
     requestUpdate();
     return false;
   }
 
-  session.disconnect();
   job.status = "OK";
-  message_ = "Fetched";
-  appendLog("Fetched " + job.url + " -> " + job.path);
-  state_ = State::Ready;
+  message_ = "Fetched " + jobDisplayName(job);
+  downloadProgress_ = downloadTotal_;
+  appendLog("Fetched " + jobDisplayName(job) + ": " + job.url + " -> " + job.path);
   requestUpdate();
   return true;
 }
@@ -344,7 +398,7 @@ std::string AutoSyncActivity::menuTitle(int index) const {
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
   }
-  return jobs_[jobIndex].path;
+  return jobDisplayName(jobs_[jobIndex]);
 }
 
 std::string AutoSyncActivity::menuSubtitle(int index) const {
@@ -361,9 +415,10 @@ std::string AutoSyncActivity::menuSubtitle(int index) const {
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
   }
+  const Job& job = jobs_[jobIndex];
   char interval[24];
-  snprintf(interval, sizeof(interval), "%lum | ", static_cast<unsigned long>(jobs_[jobIndex].intervalMinutes));
-  return std::string(interval) + jobs_[jobIndex].url;
+  snprintf(interval, sizeof(interval), "%lum | ", static_cast<unsigned long>(job.intervalMinutes));
+  return std::string(interval) + job.path;
 }
 
 std::string AutoSyncActivity::menuValue(int index) const {
@@ -372,6 +427,20 @@ std::string AutoSyncActivity::menuValue(int index) const {
     return "";
   }
   return jobs_[jobIndex].status;
+}
+
+std::string AutoSyncActivity::jobDisplayName(const Job& job) const {
+  if (!job.name.empty()) {
+    return job.name;
+  }
+  if (!job.path.empty()) {
+    const size_t slash = job.path.rfind('/');
+    if (slash != std::string::npos && slash + 1 < job.path.size()) {
+      return job.path.substr(slash + 1);
+    }
+    return job.path;
+  }
+  return job.url;
 }
 
 void AutoSyncActivity::render(RenderLock&&) {
@@ -392,10 +461,28 @@ void AutoSyncActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2, tr(STR_LOADING));
   } else if (state_ == State::Fetching) {
     char progress[64];
-    snprintf(progress, sizeof(progress), "Job %lu/%lu", static_cast<unsigned long>(currentJob_),
-             static_cast<unsigned long>(totalJobs_));
-    renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 12, message_.c_str());
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 12, progress);
+    if (currentJob_ == 0) {
+      snprintf(progress, sizeof(progress), "%lu job%s", static_cast<unsigned long>(totalJobs_),
+               totalJobs_ == 1 ? "" : "s");
+    } else {
+      snprintf(progress, sizeof(progress), "Job %lu/%lu", static_cast<unsigned long>(currentJob_),
+               static_cast<unsigned long>(totalJobs_));
+    }
+    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    const int centerY = pageHeight / 2 - lineHeight * 2;
+    renderer.drawCenteredText(UI_12_FONT_ID, centerY, message_.c_str());
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY + lineHeight + metrics.verticalSpacing / 2, progress);
+    if (!connectedSsid_.empty()) {
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY + lineHeight * 2 + metrics.verticalSpacing,
+                                connectedSsid_.c_str());
+    }
+    if (downloadTotal_ > 0) {
+      const int barY = centerY + lineHeight * 3 + metrics.verticalSpacing * 2;
+      GUI.drawProgressBar(
+          renderer,
+          Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+          downloadProgress_, downloadTotal_);
+    }
   } else if (jobs_.empty() && state_ == State::Error) {
     renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 12, "No jobs loaded", true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 12, message_.c_str());
