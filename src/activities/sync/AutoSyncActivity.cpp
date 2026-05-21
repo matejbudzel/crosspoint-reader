@@ -17,10 +17,12 @@
 namespace {
 constexpr const char* JOBS_FILE = "/.crosspoint/auto-sync.json";
 constexpr const char* LOG_FILE = "/.crosspoint/auto-sync.log";
+constexpr const char* LOG_VIEW_FILE = "/.crosspoint/auto-sync-log.txt";
 constexpr const char* LOG_TAG = "SYNC";
 constexpr int ACTION_FETCH_ALL = 0;
 constexpr int ACTION_RELOAD = 1;
-constexpr int ACTION_COUNT = 2;
+constexpr int ACTION_OPEN_LOG = 2;
+constexpr int ACTION_COUNT = 3;
 
 bool isHttpUrl(const std::string& url) { return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0; }
 
@@ -29,7 +31,14 @@ bool ensureParentDirectory(const std::string& path) {
   if (slash == std::string::npos || slash == 0) {
     return true;
   }
-  return Storage.mkdir(path.substr(0, slash).c_str());
+  const std::string parent = path.substr(0, slash);
+  FsFile existing = Storage.open(parent.c_str());
+  if (existing) {
+    const bool isDirectory = existing.isDirectory();
+    existing.close();
+    return isDirectory;
+  }
+  return Storage.mkdir(parent.c_str());
 }
 
 std::string downloadErrorText(HttpDownloader::DownloadError error) {
@@ -156,11 +165,38 @@ void AutoSyncActivity::fetchSelected() {
 }
 
 void AutoSyncActivity::fetchAll() {
+  size_t fetched = 0;
+  size_t failed = 0;
   for (size_t i = 0; i < jobs_.size(); ++i) {
-    if (!fetchJob(i)) {
-      break;
+    if (fetchJob(i)) {
+      fetched++;
+    } else {
+      failed++;
     }
   }
+  char summary[48];
+  snprintf(summary, sizeof(summary), "Done: %lu OK, %lu failed", static_cast<unsigned long>(fetched),
+           static_cast<unsigned long>(failed));
+  message_ = summary;
+  state_ = State::Ready;
+  requestUpdate();
+}
+
+void AutoSyncActivity::openLog() {
+  if (!Storage.exists(LOG_FILE)) {
+    message_ = "No log file";
+    requestUpdate();
+    return;
+  }
+
+  const String content = Storage.readFile(LOG_FILE);
+  if (!Storage.writeFile(LOG_VIEW_FILE, content)) {
+    message_ = "Log open failed";
+    requestUpdate();
+    return;
+  }
+
+  onSelectBook(LOG_VIEW_FILE);
 }
 
 bool AutoSyncActivity::fetchJob(size_t index) {
@@ -275,6 +311,8 @@ void AutoSyncActivity::loop() {
     } else if (selectedIndex_ == ACTION_RELOAD) {
       loadJobs();
       requestUpdate();
+    } else if (selectedIndex_ == ACTION_OPEN_LOG) {
+      openLog();
     } else {
       fetchSelected();
     }
@@ -299,6 +337,9 @@ std::string AutoSyncActivity::menuTitle(int index) const {
   if (index == ACTION_RELOAD) {
     return "Reload jobs";
   }
+  if (index == ACTION_OPEN_LOG) {
+    return "Open log";
+  }
   const int jobIndex = index - ACTION_COUNT;
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
@@ -313,11 +354,16 @@ std::string AutoSyncActivity::menuSubtitle(int index) const {
   if (index == ACTION_RELOAD) {
     return JOBS_FILE;
   }
+  if (index == ACTION_OPEN_LOG) {
+    return LOG_FILE;
+  }
   const int jobIndex = index - ACTION_COUNT;
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
   }
-  return jobs_[jobIndex].url + " | " + jobs_[jobIndex].status;
+  char interval[24];
+  snprintf(interval, sizeof(interval), "%lum | ", static_cast<unsigned long>(jobs_[jobIndex].intervalMinutes));
+  return std::string(interval) + jobs_[jobIndex].url;
 }
 
 std::string AutoSyncActivity::menuValue(int index) const {
@@ -325,9 +371,7 @@ std::string AutoSyncActivity::menuValue(int index) const {
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
   }
-  char buf[24];
-  snprintf(buf, sizeof(buf), "%lum", static_cast<unsigned long>(jobs_[jobIndex].intervalMinutes));
-  return buf;
+  return jobs_[jobIndex].status;
 }
 
 void AutoSyncActivity::render(RenderLock&&) {
@@ -362,7 +406,8 @@ void AutoSyncActivity::render(RenderLock&&) {
         [this](int index) { return menuValue(index); }, false);
   }
 
-  const char* confirmLabel = selectedIndex_ == ACTION_RELOAD ? "Reload" : "Fetch";
+  const char* confirmLabel = selectedIndex_ == ACTION_RELOAD ? "Reload" : selectedIndex_ == ACTION_OPEN_LOG ? "Open"
+                                                                                                            : "Fetch";
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
