@@ -42,6 +42,7 @@ class AutoSyncActivity final : public Activity {
   void openLog();
   bool fetchJob(size_t index, NetworkSession& session);
   bool connectForFetch(NetworkSession& session);
+  bool validateManifestFile(const std::string& path, std::string& error) const;
   bool validateJob(const Job& job, std::string& error) const;
   void appendLog(const std::string& line);
   std::string jobDisplayName(const Job& job) const;

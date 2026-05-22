@@ -8,6 +8,7 @@
 #include <Logging.h>
 
 #include <cstdio>
+#include <set>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -16,8 +17,10 @@
 
 namespace {
 constexpr const char* JOBS_FILE = "/.crosspoint/auto-sync.json";
+constexpr const char* JOBS_FILE_RELATIVE = ".crosspoint/auto-sync.json";
 constexpr const char* LOG_FILE = "/.crosspoint/auto-sync.log";
 constexpr const char* LOG_VIEW_FILE = "/.crosspoint/auto-sync-log.txt";
+constexpr const char* MANIFEST_DOWNLOAD_TMP = "/.crosspoint/auto-sync.next.json";
 constexpr const char* LOG_TAG = "SYNC";
 constexpr int ACTION_FETCH_ALL = 0;
 constexpr int ACTION_RELOAD = 1;
@@ -25,6 +28,15 @@ constexpr int ACTION_OPEN_LOG = 2;
 constexpr int ACTION_COUNT = 3;
 
 bool isHttpUrl(const std::string& url) { return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0; }
+
+std::string normalizeJobPath(const std::string& path) {
+  if (path == JOBS_FILE_RELATIVE) {
+    return JOBS_FILE;
+  }
+  return path;
+}
+
+bool isManifestPath(const std::string& path) { return path == JOBS_FILE; }
 
 bool ensureParentDirectory(const std::string& path) {
   const size_t slash = path.rfind('/');
@@ -104,14 +116,24 @@ bool AutoSyncActivity::parseJobsFile(const char* json) {
     return false;
   }
 
+  std::set<std::string> seenPaths;
   jobs_.reserve(jobs.size());
   for (JsonObject item : jobs) {
     Job job;
     job.name = item["name"] | "";
     job.url = item["url"] | "";
-    job.path = item["path"] | "";
+    job.path = normalizeJobPath(item["path"] | "");
     job.intervalMinutes = item["intervalMinutes"] | 0;
     job.status = "Not fetched";
+
+    if (!job.path.empty()) {
+      if (seenPaths.find(job.path) != seenPaths.end()) {
+        message_ = "Duplicate target path: " + job.path;
+        jobs_.clear();
+        return false;
+      }
+      seenPaths.insert(job.path);
+    }
 
     std::string error;
     if (!validateJob(job, error)) {
@@ -136,10 +158,60 @@ bool AutoSyncActivity::validateJob(const Job& job, std::string& error) const {
     error = "Path contains ..";
     return false;
   }
-  if (job.path.rfind("/.crosspoint/auto-sync", 0) == 0) {
+  if (job.path.rfind("/.crosspoint/auto-sync", 0) == 0 && !isManifestPath(job.path)) {
     error = "Reserved path";
     return false;
   }
+  return true;
+}
+
+bool AutoSyncActivity::validateManifestFile(const std::string& path, std::string& error) const {
+  const String json = Storage.readFile(path.c_str());
+  if (json.isEmpty()) {
+    error = "Manifest is empty";
+    return false;
+  }
+
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, json.c_str());
+  if (err) {
+    error = std::string("Manifest JSON: ") + err.c_str();
+    return false;
+  }
+
+  const int version = doc["version"] | 0;
+  if (version != 1) {
+    error = "Manifest version";
+    return false;
+  }
+
+  JsonArray jobs = doc["jobs"].as<JsonArray>();
+  if (jobs.isNull()) {
+    error = "Manifest jobs";
+    return false;
+  }
+
+  std::set<std::string> seenPaths;
+  for (JsonObject item : jobs) {
+    Job job;
+    job.name = item["name"] | "";
+    job.url = item["url"] | "";
+    job.path = normalizeJobPath(item["path"] | "");
+    job.intervalMinutes = item["intervalMinutes"] | 0;
+
+    if (!job.path.empty()) {
+      if (seenPaths.find(job.path) != seenPaths.end()) {
+        error = "Duplicate target path: " + job.path;
+        return false;
+      }
+      seenPaths.insert(job.path);
+    }
+
+    if (!validateJob(job, error)) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -301,7 +373,8 @@ bool AutoSyncActivity::fetchJob(size_t index, NetworkSession& session) {
     return false;
   }
 
-  const std::string tempPath = job.path + ".part";
+  const bool updatesManifest = isManifestPath(job.path);
+  const std::string tempPath = updatesManifest ? MANIFEST_DOWNLOAD_TMP : job.path + ".part";
   Storage.remove(tempPath.c_str());
 
   job.status = "Downloading";
@@ -325,6 +398,17 @@ bool AutoSyncActivity::fetchJob(size_t index, NetworkSession& session) {
     appendLog("Download failed for " + job.url + " -> " + job.path + ": " + job.status);
     requestUpdate();
     return false;
+  }
+
+  if (updatesManifest) {
+    if (!validateManifestFile(tempPath, error)) {
+      Storage.remove(tempPath.c_str());
+      job.status = error;
+      message_ = error;
+      appendLog("Manifest update rejected for " + job.url + ": " + error);
+      requestUpdate();
+      return false;
+    }
   }
 
   if (Storage.exists(job.path.c_str())) {
