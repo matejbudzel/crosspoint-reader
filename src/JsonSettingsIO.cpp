@@ -147,6 +147,8 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
+  doc["powerLogEnabled"] = s.powerLogEnabled;
+  doc["autoSyncScheduled"] = s.autoSyncScheduled;
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
@@ -241,6 +243,8 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);
   s.sdFontFamilyName[sizeof(s.sdFontFamilyName) - 1] = '\0';
+  s.powerLogEnabled = clamp(doc["powerLogEnabled"] | (uint8_t)0, (uint8_t)2, 0);
+  s.autoSyncScheduled = clamp(doc["autoSyncScheduled"] | (uint8_t)0, (uint8_t)2, 0);
 
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {

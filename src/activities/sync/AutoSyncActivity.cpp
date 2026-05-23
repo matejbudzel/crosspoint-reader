@@ -11,6 +11,7 @@
 #include <set>
 
 #include "MappedInputManager.h"
+#include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/CrossPointNetworkManager.h"
@@ -22,10 +23,11 @@ constexpr const char* LOG_FILE = "/.crosspoint/auto-sync.log";
 constexpr const char* LOG_VIEW_FILE = "/.crosspoint/auto-sync-log.txt";
 constexpr const char* MANIFEST_DOWNLOAD_TMP = "/.crosspoint/auto-sync.next.json";
 constexpr const char* LOG_TAG = "SYNC";
-constexpr int ACTION_FETCH_ALL = 0;
-constexpr int ACTION_RELOAD = 1;
-constexpr int ACTION_OPEN_LOG = 2;
-constexpr int ACTION_COUNT = 3;
+constexpr int ACTION_SCHEDULED = 0;
+constexpr int ACTION_FETCH_ALL = 1;
+constexpr int ACTION_RELOAD = 2;
+constexpr int ACTION_OPEN_LOG = 3;
+constexpr int ACTION_COUNT = 4;
 
 bool isHttpUrl(const std::string& url) { return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0; }
 
@@ -446,6 +448,15 @@ void AutoSyncActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     if (selectedIndex_ == ACTION_FETCH_ALL) {
       fetchAll();
+    } else if (selectedIndex_ == ACTION_SCHEDULED) {
+      if (!SETTINGS.softSleepEnabled) {
+        message_ = "Enable Soft Sleep first";
+      } else {
+        SETTINGS.autoSyncScheduled = !SETTINGS.autoSyncScheduled;
+        SETTINGS.saveToFile();
+        message_ = SETTINGS.autoSyncScheduled ? "Scheduled sync on" : "Scheduled sync off";
+      }
+      requestUpdate();
     } else if (selectedIndex_ == ACTION_RELOAD) {
       loadJobs();
       requestUpdate();
@@ -469,6 +480,9 @@ void AutoSyncActivity::loop() {
 }
 
 std::string AutoSyncActivity::menuTitle(int index) const {
+  if (index == ACTION_SCHEDULED) {
+    return tr(STR_AUTO_SYNC_SCHEDULED);
+  }
   if (index == ACTION_FETCH_ALL) {
     return "Fetch all";
   }
@@ -486,6 +500,9 @@ std::string AutoSyncActivity::menuTitle(int index) const {
 }
 
 std::string AutoSyncActivity::menuSubtitle(int index) const {
+  if (index == ACTION_SCHEDULED) {
+    return "Run intervals while soft sleeping";
+  }
   if (index == ACTION_FETCH_ALL) {
     return "Run every job from auto-sync.json";
   }
@@ -506,6 +523,9 @@ std::string AutoSyncActivity::menuSubtitle(int index) const {
 }
 
 std::string AutoSyncActivity::menuValue(int index) const {
+  if (index == ACTION_SCHEDULED) {
+    return SETTINGS.autoSyncScheduled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+  }
   const int jobIndex = index - ACTION_COUNT;
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
@@ -577,8 +597,10 @@ void AutoSyncActivity::render(RenderLock&&) {
         [this](int index) { return menuValue(index); }, false);
   }
 
-  const char* confirmLabel = selectedIndex_ == ACTION_RELOAD ? "Reload" : selectedIndex_ == ACTION_OPEN_LOG ? "Open"
-                                                                                                            : "Fetch";
+  const char* confirmLabel = selectedIndex_ == ACTION_RELOAD       ? "Reload"
+                             : selectedIndex_ == ACTION_OPEN_LOG   ? "Open"
+                             : selectedIndex_ == ACTION_SCHEDULED  ? tr(STR_TOGGLE)
+                                                                    : "Fetch";
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

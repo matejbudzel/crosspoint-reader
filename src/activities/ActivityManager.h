@@ -88,6 +88,7 @@ class ActivityManager {
   void goToAutoSync();
   void goToReader(std::string path);
   void goToSleep(bool fromTimeout = false);
+  void goToSoftSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

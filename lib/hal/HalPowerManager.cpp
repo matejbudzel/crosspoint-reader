@@ -10,6 +10,26 @@
 
 HalPowerManager powerManager;  // Singleton instance
 
+namespace {
+bool readI2CReg16LE(uint8_t addr, uint8_t reg, uint16_t* outValue) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) < 2) {
+    while (Wire.available()) {
+      Wire.read();
+    }
+    return false;
+  }
+  const uint8_t lo = Wire.read();
+  const uint8_t hi = Wire.read();
+  *outValue = (static_cast<uint16_t>(hi) << 8) | lo;
+  return true;
+}
+}  // namespace
+
 void HalPowerManager::begin() {
   if (gpio.deviceIsX3()) {
     // X3 uses an I2C fuel gauge for battery monitoring.
@@ -130,6 +150,39 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
     _batteryCachedPercent = (_batteryCachedPercent * 9 + battery.readPercentage() * 10) / 10;
   }
   return _batteryCachedPercent / 10;
+}
+
+HalPowerManager::BatteryTelemetry HalPowerManager::readBatteryTelemetry() const {
+  BatteryTelemetry telemetry;
+
+  if (_batteryUseI2C) {
+    uint16_t soc = 0;
+    if (readI2CReg16LE(I2C_ADDR_BQ27220, BQ27220_SOC_REG, &soc)) {
+      telemetry.percent = soc > 100 ? 100 : soc;
+    } else {
+      telemetry.percent = getBatteryPercentage();
+    }
+
+    uint16_t voltageMv = 0;
+    if (readI2CReg16LE(I2C_ADDR_BQ27220, BQ27220_VOLT_REG, &voltageMv)) {
+      telemetry.voltageMv = voltageMv;
+      telemetry.hasVoltage = true;
+    }
+
+    uint16_t rawCurrent = 0;
+    if (readI2CReg16LE(I2C_ADDR_BQ27220, BQ27220_CUR_REG, &rawCurrent)) {
+      telemetry.currentMa = static_cast<int16_t>(rawCurrent);
+      telemetry.hasCurrent = true;
+    }
+
+    return telemetry;
+  }
+
+  static const BatteryMonitor battery = BatteryMonitor(BAT_GPIO0);
+  telemetry.voltageMv = battery.readMillivolts();
+  telemetry.percent = BatteryMonitor::percentageFromMillivolts(telemetry.voltageMv);
+  telemetry.hasVoltage = true;
+  return telemetry;
 }
 
 HalPowerManager::Lock::Lock() {

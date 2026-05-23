@@ -204,6 +204,11 @@ void ActivityManager::goToSleep(bool fromTimeout) {
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
+void ActivityManager::goToSoftSleep(bool fromTimeout) {
+  pushActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout));
+  loop();  // Render the sleep screen immediately, but keep the previous activity on the stack.
+}
+
 void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {

@@ -250,6 +250,12 @@ class CrossPointSettings {
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // Soft sleep keeps the main loop alive at low CPU frequency instead of entering battery power-off deep sleep.
+  uint8_t softSleepEnabled = 0;
+  // Power log records rough battery and mode telemetry to SD card.
+  uint8_t powerLogEnabled = 0;
+  // Scheduled auto-sync only runs while soft sleep is active.
+  uint8_t autoSyncScheduled = 0;
 
   ~CrossPointSettings() = default;
 

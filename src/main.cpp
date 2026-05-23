@@ -20,9 +20,11 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "AutoSyncScheduler.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
+#include "PowerLog.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
@@ -41,6 +43,7 @@ FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
+static bool softSleepActive = false;
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -260,6 +263,7 @@ static bool loadSleepFrameBuffer() {
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
+  POWER_LOG.event(fromTimeout ? "hard_sleep_timeout" : "hard_sleep_button");
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
 
   const bool isQuickResumeSleep =
@@ -291,6 +295,32 @@ void enterDeepSleep(bool fromTimeout = false) {
   LOG_DBG("MAIN", "Entering deep sleep");
 
   powerManager.startDeepSleep(gpio);
+}
+
+void enterSoftSleep(bool fromTimeout = false) {
+  HalPowerManager::Lock powerLock;
+  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  APP_STATE.showBootScreen = true;
+  APP_STATE.saveToFile();
+
+  softSleepActive = true;
+  activityManager.goToSoftSleep(fromTimeout);
+
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+
+  POWER_LOG.setMode(PowerLog::Mode::SoftSleep);
+  powerManager.setPowerSaving(true);
+}
+
+void exitSoftSleep() {
+  softSleepActive = false;
+  POWER_LOG.setMode(PowerLog::Mode::Active);
+  powerManager.setPowerSaving(false);
+  allowSleepAt = millis() + 2000;
+  activityManager.popActivity();
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -380,6 +410,7 @@ void setup() {
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
+  POWER_LOG.begin();
 
   const auto wakeupReason = gpio.getWakeupReason();
   switch (wakeupReason) {
@@ -543,6 +574,25 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
+
+  if (softSleepActive) {
+    POWER_LOG.loop();
+    AUTO_SYNC_SCHEDULER.loop(true);
+    if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > 2500) {
+      POWER_LOG.event("soft_sleep_force_hard_sleep");
+      enterDeepSleep();
+      return;
+    }
+    if (gpio.wasAnyReleased() || (gpio.wasAnyPressed() && !gpio.isPressed(HalGPIO::BTN_POWER))) {
+      exitSoftSleep();
+      lastActivityTime = millis();
+      return;
+    }
+    powerManager.setPowerSaving(true);
+    delay(500);
+    return;
+  }
+
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
       activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
@@ -576,7 +626,11 @@ void loop() {
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
-    enterDeepSleep(true);
+    if (SETTINGS.softSleepEnabled) {
+      enterSoftSleep(true);
+    } else {
+      enterDeepSleep(true);
+    }
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
@@ -587,7 +641,11 @@ void loop() {
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
     }
-    enterDeepSleep();
+    if (SETTINGS.softSleepEnabled) {
+      enterSoftSleep();
+    } else {
+      enterDeepSleep();
+    }
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
@@ -609,6 +667,7 @@ void loop() {
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   const unsigned long activityDuration = millis() - activityStartTime;
+  POWER_LOG.loop();
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {
