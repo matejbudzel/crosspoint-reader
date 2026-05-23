@@ -252,6 +252,8 @@ class CrossPointSettings {
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
   // Soft sleep keeps the main loop alive at low CPU frequency instead of entering battery power-off deep sleep.
   uint8_t softSleepEnabled = 0;
+  // Seconds between soft-sleep slideshow image changes.
+  uint8_t softSleepSlideshowIntervalSeconds = 60;
   // Power log records rough battery and mode telemetry to SD card.
   uint8_t powerLogEnabled = 0;
   // Scheduled auto-sync only runs while soft sleep is active.

@@ -27,6 +27,7 @@
 #include "PowerLog.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "SoftSleepSlideshow.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
@@ -305,6 +306,7 @@ void enterSoftSleep(bool fromTimeout = false) {
 
   softSleepActive = true;
   activityManager.goToSoftSleep(fromTimeout);
+  SOFT_SLEEP_SLIDESHOW.begin(renderer);
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(true);
@@ -317,6 +319,7 @@ void enterSoftSleep(bool fromTimeout = false) {
 
 void exitSoftSleep() {
   softSleepActive = false;
+  SOFT_SLEEP_SLIDESHOW.end();
   POWER_LOG.setMode(PowerLog::Mode::Active);
   powerManager.setPowerSaving(false);
   allowSleepAt = millis() + 2000;
@@ -578,9 +581,18 @@ void loop() {
   if (softSleepActive) {
     POWER_LOG.loop();
     AUTO_SYNC_SCHEDULER.loop(true);
+    SOFT_SLEEP_SLIDESHOW.loop(renderer);
     if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > 2500) {
       POWER_LOG.event("soft_sleep_force_hard_sleep");
       enterDeepSleep();
+      return;
+    }
+    if (gpio.wasReleased(HalGPIO::BTN_UP)) {
+      SOFT_SLEEP_SLIDESHOW.previous(renderer);
+      return;
+    }
+    if (gpio.wasReleased(HalGPIO::BTN_DOWN)) {
+      SOFT_SLEEP_SLIDESHOW.next(renderer);
       return;
     }
     if (gpio.wasAnyReleased() || (gpio.wasAnyPressed() && !gpio.isPressed(HalGPIO::BTN_POWER))) {

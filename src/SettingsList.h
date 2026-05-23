@@ -190,6 +190,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_SOFT_SLEEP, &CrossPointSettings::softSleepEnabled, "softSleepEnabled",
                             StrId::STR_CAT_SYSTEM),
+        SettingInfo::Value(StrId::STR_SOFT_SLEEP_SLIDESHOW_INTERVAL,
+                           &CrossPointSettings::softSleepSlideshowIntervalSeconds, {15, 240, 15},
+                           "softSleepSlideshowIntervalSeconds", StrId::STR_CAT_SYSTEM),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(
