@@ -45,6 +45,7 @@ SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
 static bool softSleepActive = false;
+static bool softSleepPowerReleased = true;
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -305,6 +306,7 @@ void enterSoftSleep(bool fromTimeout = false) {
   APP_STATE.saveToFile();
 
   softSleepActive = true;
+  softSleepPowerReleased = fromTimeout || !gpio.isPressed(HalGPIO::BTN_POWER);
   activityManager.goToSoftSleep(fromTimeout);
   SOFT_SLEEP_SLIDESHOW.begin(renderer);
 
@@ -582,6 +584,14 @@ void loop() {
     POWER_LOG.loop();
     AUTO_SYNC_SCHEDULER.loop(true);
     SOFT_SLEEP_SLIDESHOW.loop(renderer);
+    if (!softSleepPowerReleased) {
+      if (gpio.wasReleased(HalGPIO::BTN_POWER) || !gpio.isPressed(HalGPIO::BTN_POWER)) {
+        softSleepPowerReleased = true;
+      }
+      powerManager.setPowerSaving(true);
+      delay(500);
+      return;
+    }
     if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > 2500) {
       POWER_LOG.event("soft_sleep_force_hard_sleep");
       enterDeepSleep();
