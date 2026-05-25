@@ -10,6 +10,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "Dashboard.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -50,6 +51,11 @@ void SleepActivity::onEnter() {
       } else {
         return renderCustomSleepScreen();
       }
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::DASHBOARD):
+      if (DASHBOARD.renderNextForSleep(renderer)) {
+        return;
+      }
+      return renderDefaultSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }

@@ -30,7 +30,7 @@
 #include "PowerLog.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
-#include "SoftSleepSlideshow.h"
+#include "Dashboard.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
@@ -313,7 +313,7 @@ void enterSoftSleep(bool fromTimeout = false) {
   softSleepPowerReleased = fromTimeout || !gpio.isPressed(HalGPIO::BTN_POWER);
   softSleepWindowOpen = true;
   activityManager.goToSoftSleep(fromTimeout);
-  SOFT_SLEEP_SLIDESHOW.begin(renderer);
+  DASHBOARD.begin(renderer);
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(true);
@@ -327,7 +327,7 @@ void enterSoftSleep(bool fromTimeout = false) {
 void exitSoftSleep() {
   softSleepActive = false;
   softSleepWindowOpen = true;
-  SOFT_SLEEP_SLIDESHOW.end();
+  DASHBOARD.end();
   POWER_LOG.setMode(PowerLog::Mode::Active);
   powerManager.setPowerSaving(false);
   allowSleepAt = millis() + 2000;
@@ -595,11 +595,11 @@ void loop() {
     if (softSleepWindowOpen) {
       POWER_LOG.loop();
       AUTO_SYNC_SCHEDULER.loop(true);
-      SOFT_SLEEP_SLIDESHOW.loop(renderer);
+      DASHBOARD.loop(renderer);
       softSleepWindowOpen = false;
     }
 
-    const uint32_t waitMs = SOFT_SLEEP_SLIDESHOW.millisUntilNextChange();
+    const uint32_t waitMs = DASHBOARD.millisUntilNextChange();
     if (waitForSoftSleepWake(waitMs)) {
       exitSoftSleep();
       return;

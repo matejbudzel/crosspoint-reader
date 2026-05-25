@@ -1,4 +1,4 @@
-#include "SoftSleepSlideshow.h"
+#include "Dashboard.h"
 
 #include <Bitmap.h>
 #include <FsHelpers.h>
@@ -10,18 +10,22 @@
 #include <cmath>
 
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "PowerLog.h"
 #include "activities/RenderLock.h"
 #include "components/UITheme.h"
 
-SoftSleepSlideshow SOFT_SLEEP_SLIDESHOW;
+Dashboard DASHBOARD;
 
 namespace {
+constexpr const char* DASHBOARD_DIR = "/.dashboard";
 constexpr const char* PRIMARY_SLEEP_DIR = "/.sleep";
 constexpr const char* FALLBACK_SLEEP_DIR = "/sleep";
-constexpr int OVERLAY_WIDTH = 78;
 constexpr int OVERLAY_HEIGHT = 28;
 constexpr int OVERLAY_MARGIN = 8;
+constexpr int OVERLAY_PADDING = 8;
+constexpr int DOT_RADIUS = 2;
+constexpr int DOT_SPACING = 8;
 
 bool openDirectory(const char* path, FsFile& dir) {
   dir = Storage.open(path);
@@ -29,35 +33,30 @@ bool openDirectory(const char* path, FsFile& dir) {
 }
 }  // namespace
 
-void SoftSleepSlideshow::begin(GfxRenderer& renderer) {
+void Dashboard::begin(GfxRenderer& renderer) {
   active_ = true;
-  currentIndex_ = 0;
   lastChangeMs_ = millis();
 
   if (!scanFiles()) {
     return;
   }
 
-  renderCurrent(renderer, "soft_sleep_slideshow_start");
+  renderCurrent(renderer, "dashboard_start");
 }
 
-void SoftSleepSlideshow::end() {
-  active_ = false;
-  files_.clear();
-  directory_.clear();
-}
+void Dashboard::end() { active_ = false; }
 
-void SoftSleepSlideshow::loop(GfxRenderer& renderer) {
+void Dashboard::loop(GfxRenderer& renderer) {
   if (!active_ || files_.empty()) {
     return;
   }
 
   if (millisUntilNextChange() == 0) {
-    next(renderer, "soft_sleep_image_auto");
+    next(renderer, "dashboard_image_auto");
   }
 }
 
-uint32_t SoftSleepSlideshow::millisUntilNextChange() const {
+uint32_t Dashboard::millisUntilNextChange() const {
   const uint32_t intervalMs = static_cast<uint32_t>(std::max<uint8_t>(SETTINGS.softSleepSlideshowIntervalSeconds, 15)) *
                               1000UL;
   if (!active_ || files_.empty()) {
@@ -67,44 +66,62 @@ uint32_t SoftSleepSlideshow::millisUntilNextChange() const {
   return elapsed >= intervalMs ? 0 : intervalMs - elapsed;
 }
 
-void SoftSleepSlideshow::next(GfxRenderer& renderer, const char* reason) {
+void Dashboard::next(GfxRenderer& renderer, const char* reason) {
   if (!active_) {
     begin(renderer);
     return;
   }
-  if (files_.empty() && !scanFiles()) {
-    return;
-  }
-  if (files_.empty()) {
+  if (!scanFiles()) {
     return;
   }
 
   currentIndex_ = (currentIndex_ + 1) % files_.size();
-  renderCurrent(renderer, reason ? reason : "soft_sleep_image_next");
+  renderCurrent(renderer, reason ? reason : "dashboard_image_next");
 }
 
-void SoftSleepSlideshow::previous(GfxRenderer& renderer) {
+void Dashboard::previous(GfxRenderer& renderer) {
   if (!active_) {
     begin(renderer);
     return;
   }
-  if (files_.empty() && !scanFiles()) {
-    return;
-  }
-  if (files_.empty()) {
+  if (!scanFiles()) {
     return;
   }
 
   currentIndex_ = currentIndex_ == 0 ? files_.size() - 1 : currentIndex_ - 1;
-  renderCurrent(renderer, "soft_sleep_image_prev");
+  renderCurrent(renderer, "dashboard_image_prev");
 }
 
-bool SoftSleepSlideshow::scanFiles() {
+bool Dashboard::renderNextForSleep(GfxRenderer& renderer) {
+  active_ = true;
+  if (!scanFiles()) {
+    return false;
+  }
+  if (hasRendered_) {
+    currentIndex_ = (currentIndex_ + 1) % files_.size();
+  }
+  return renderCurrent(renderer, "dashboard_sleep");
+}
+
+bool Dashboard::hasItems() { return scanFiles(); }
+
+size_t Dashboard::itemCount() {
+  scanFiles();
+  return files_.size();
+}
+
+bool Dashboard::scanFiles() {
+  const std::string previousFile =
+      !currentFilename_.empty()
+          ? currentFilename_
+          : (currentIndex_ < files_.size() ? files_[currentIndex_] : APP_STATE.dashboardLastImage);
   files_.clear();
   directory_.clear();
 
   FsFile dir;
-  if (openDirectory(PRIMARY_SLEEP_DIR, dir)) {
+  if (openDirectory(DASHBOARD_DIR, dir)) {
+    directory_ = DASHBOARD_DIR;
+  } else if (openDirectory(PRIMARY_SLEEP_DIR, dir)) {
     directory_ = PRIMARY_SLEEP_DIR;
   } else if (openDirectory(FALLBACK_SLEEP_DIR, dir)) {
     directory_ = FALLBACK_SLEEP_DIR;
@@ -133,21 +150,31 @@ bool SoftSleepSlideshow::scanFiles() {
   dir.close();
 
   std::sort(files_.begin(), files_.end());
-  if (currentIndex_ >= files_.size()) {
+  if (files_.empty()) {
+    currentFilename_.clear();
+    currentIndex_ = 0;
+    return false;
+  }
+
+  const auto it = std::find(files_.begin(), files_.end(), previousFile);
+  if (it != files_.end()) {
+    currentIndex_ = static_cast<size_t>(std::distance(files_.begin(), it));
+  } else if (currentIndex_ >= files_.size()) {
     currentIndex_ = 0;
   }
-  return !files_.empty();
+  currentFilename_ = files_[currentIndex_];
+  return true;
 }
 
-bool SoftSleepSlideshow::renderCurrent(GfxRenderer& renderer, const char* eventName) {
-  if (files_.empty() || directory_.empty()) {
+bool Dashboard::renderCurrent(GfxRenderer& renderer, const char* eventName) {
+  if (!scanFiles()) {
     return false;
   }
 
   FsFile file;
   for (size_t attempt = 0; attempt < files_.size(); ++attempt) {
     const std::string path = directory_ + "/" + files_[currentIndex_];
-    if (Storage.openFileForRead("SSLP", path, file)) {
+    if (Storage.openFileForRead("DASH", path, file)) {
       Bitmap bitmap(file, true);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
         int x, y;
@@ -187,12 +214,18 @@ bool SoftSleepSlideshow::renderCurrent(GfxRenderer& renderer, const char* eventN
               CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
             renderer.invertScreen();
           }
-          drawBatteryOverlay(renderer);
+          drawOverlay(renderer);
           renderer.displayBuffer(HalDisplay::HALF_REFRESH);
         }
 
         file.close();
+        currentFilename_ = files_[currentIndex_];
+        if (APP_STATE.dashboardLastImage != currentFilename_) {
+          APP_STATE.dashboardLastImage = currentFilename_;
+          APP_STATE.saveToFile();
+        }
         lastChangeMs_ = millis();
+        hasRendered_ = true;
         POWER_LOG.event(eventName);
         return true;
       }
@@ -203,13 +236,40 @@ bool SoftSleepSlideshow::renderCurrent(GfxRenderer& renderer, const char* eventN
   return false;
 }
 
-void SoftSleepSlideshow::drawBatteryOverlay(GfxRenderer& renderer) const {
+void Dashboard::drawOverlay(GfxRenderer& renderer) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int x = renderer.getScreenWidth() - OVERLAY_WIDTH - OVERLAY_MARGIN;
+  const int visibleDots = static_cast<int>(std::min<size_t>(files_.size(), 24));
+  const int dotsWidth = visibleDots > 0 ? (visibleDots - 1) * DOT_SPACING + DOT_RADIUS * 2 + OVERLAY_PADDING : 0;
+  const int batteryAreaWidth = metrics.batteryWidth + 8 + 28;
+  const int overlayWidth = std::max(78, OVERLAY_PADDING + dotsWidth + batteryAreaWidth);
+  const int x = renderer.getScreenWidth() - overlayWidth - OVERLAY_MARGIN;
   const int y = OVERLAY_MARGIN;
-  renderer.fillRect(x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT, false);
-  renderer.drawRect(x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT, true);
-  GUI.drawBatteryRight(renderer, Rect{x + OVERLAY_WIDTH - metrics.batteryWidth - 8, y + 2, metrics.batteryWidth,
-                                      metrics.batteryHeight},
+
+  renderer.fillRect(x, y, overlayWidth, OVERLAY_HEIGHT, false);
+  renderer.drawRect(x, y, overlayWidth, OVERLAY_HEIGHT, true);
+
+  if (visibleDots > 0) {
+    const int dotsY = y + OVERLAY_HEIGHT / 2 + 2;
+    int dotsX = x + OVERLAY_PADDING + DOT_RADIUS;
+    for (int i = 0; i < visibleDots; ++i) {
+      drawDot(renderer, dotsX + i * DOT_SPACING, dotsY, static_cast<size_t>(i) == currentIndex_);
+    }
+  }
+
+  GUI.drawBatteryRight(renderer,
+                       Rect{x + overlayWidth - metrics.batteryWidth - 8, y + 2, metrics.batteryWidth,
+                            metrics.batteryHeight},
                        true);
+}
+
+void Dashboard::drawDot(GfxRenderer& renderer, int centerX, int centerY, bool selected) const {
+  for (int dy = -DOT_RADIUS; dy <= DOT_RADIUS; ++dy) {
+    for (int dx = -DOT_RADIUS; dx <= DOT_RADIUS; ++dx) {
+      if (dx * dx + dy * dy <= DOT_RADIUS * DOT_RADIUS) {
+        if (selected || dx * dx + dy * dy >= (DOT_RADIUS - 1) * (DOT_RADIUS - 1)) {
+          renderer.drawPixel(centerX + dx, centerY + dy, true);
+        }
+      }
+    }
+  }
 }

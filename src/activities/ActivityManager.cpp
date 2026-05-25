@@ -8,6 +8,7 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "dashboard/DashboardActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -195,6 +196,10 @@ void ActivityManager::goToBrowser() {
 
 void ActivityManager::goToAutoSync() { replaceActivity(std::make_unique<AutoSyncActivity>(renderer, mappedInput)); }
 
+void ActivityManager::goToDashboard() {
+  replaceActivity(std::make_unique<DashboardActivity>(renderer, mappedInput));
+}
+
 void ActivityManager::goToReader(std::string path) {
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
@@ -226,6 +231,8 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
       initialMenuItem = HomeMenuItem::OPDS_BROWSER;
     } else if (activityName == "AutoSync") {
       initialMenuItem = HomeMenuItem::AUTO_SYNC;
+    } else if (activityName == "Dashboard") {
+      initialMenuItem = HomeMenuItem::DASHBOARD;
     } else if (activityName == "CrossPointWebServer") {
       initialMenuItem = HomeMenuItem::FILE_TRANSFER;
     } else if (activityName == "Settings") {

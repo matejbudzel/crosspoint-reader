@@ -137,13 +137,29 @@ Use the term "firmware soft sleep" or "idle sleep" for this feature. Do not desc
 Soft sleep behavior:
 
 - Default off.
-- Only available when auto-sync is enabled.
+- Can be used without scheduled auto-sync, but scheduled auto-sync only runs from this mode.
 - WiFi remains off except during sync windows.
-- Main loop runs with longer delays and low CPU frequency where possible.
-- Foreground activity is effectively stalled behind a sleep-looking screen until user wake/input.
+- The device enters short ESP light-sleep windows between dashboard refresh/maintenance ticks where possible.
+- Foreground activity is effectively stalled behind the Dashboard until the power button wakes the device.
 - Battery drain is higher than deep sleep and should be described as a deliberate tradeoff.
 - If soft sleep is enabled, normal power-button sleep should enter soft sleep instead of deep sleep so scheduled sync can work.
-- Later refinement: reserve a longer/alternate power-button gesture to force true deep sleep even when soft sleep is the default sleep mode.
+- Non-power buttons are ignored while soft sleep is active. Use the Dashboard activity while awake for manual navigation.
+
+## Dashboard
+
+Dashboard is the user-facing name for prepared BMP images/widgets that can be viewed interactively while awake and reused
+as the sleep screen.
+
+- Dashboard only renders already prepared `.bmp` files. It does not generate widgets itself.
+- Source directory priority: `/.dashboard`, then `/.sleep`, then `/sleep`.
+- Dashboard is always visible on Home. If no BMPs exist, it shows instructions to place files in `/.dashboard`.
+- The Dashboard activity lets side buttons move previous/next through the images.
+- Dashboard overlay shows battery plus a dot indicator for item count and current position.
+- Auto Sync jobs can write BMPs into `/.dashboard`; Dashboard rescans and recovers if folder contents change.
+- If Sleep Screen is set to Dashboard and the device enters deep sleep, firmware renders the next dashboard image before
+  sleeping. It cannot rotate again until the next wake/sleep cycle.
+- If soft sleep is enabled, the Dashboard auto-rotates on the configured interval. During each maintenance window,
+  scheduled Auto Sync and PowerLog can run, then the device returns to light sleep until the next interval or power wake.
 
 ## Network Ownership
 

@@ -106,7 +106,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // --- Display ---
         SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen,
                           {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER, StrId::STR_NONE_OPT,
-                           StrId::STR_COVER_CUSTOM, StrId::STR_QUICK_RESUME},
+                           StrId::STR_COVER_CUSTOM, StrId::STR_QUICK_RESUME, StrId::STR_DASHBOARD},
                           "sleepScreen", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
                           {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
@@ -190,7 +190,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_SOFT_SLEEP, &CrossPointSettings::softSleepEnabled, "softSleepEnabled",
                             StrId::STR_CAT_SYSTEM),
-        SettingInfo::Value(StrId::STR_SOFT_SLEEP_SLIDESHOW_INTERVAL,
+        SettingInfo::Value(StrId::STR_DASHBOARD_INTERVAL,
                            &CrossPointSettings::softSleepSlideshowIntervalSeconds, {15, 240, 15},
                            "softSleepSlideshowIntervalSeconds", StrId::STR_CAT_SYSTEM),
 
