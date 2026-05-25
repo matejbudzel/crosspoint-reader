@@ -52,11 +52,19 @@ void SoftSleepSlideshow::loop(GfxRenderer& renderer) {
     return;
   }
 
-  const uint32_t intervalMs = static_cast<uint32_t>(std::max<uint8_t>(SETTINGS.softSleepSlideshowIntervalSeconds, 15)) *
-                              1000UL;
-  if (millis() - lastChangeMs_ >= intervalMs) {
+  if (millisUntilNextChange() == 0) {
     next(renderer, "soft_sleep_image_auto");
   }
+}
+
+uint32_t SoftSleepSlideshow::millisUntilNextChange() const {
+  const uint32_t intervalMs = static_cast<uint32_t>(std::max<uint8_t>(SETTINGS.softSleepSlideshowIntervalSeconds, 15)) *
+                              1000UL;
+  if (!active_ || files_.empty()) {
+    return intervalMs;
+  }
+  const uint32_t elapsed = millis() - lastChangeMs_;
+  return elapsed >= intervalMs ? 0 : intervalMs - elapsed;
 }
 
 void SoftSleepSlideshow::next(GfxRenderer& renderer, const char* reason) {

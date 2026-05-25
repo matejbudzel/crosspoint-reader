@@ -13,6 +13,7 @@ class SoftSleepSlideshow {
   void loop(GfxRenderer& renderer);
   void next(GfxRenderer& renderer, const char* reason = "manual_next");
   void previous(GfxRenderer& renderer);
+  uint32_t millisUntilNextChange() const;
 
  private:
   std::vector<std::string> files_;

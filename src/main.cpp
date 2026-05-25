@@ -15,7 +15,10 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <builtinFonts/all.h>
+#include <driver/gpio.h>
+#include <esp_sleep.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -46,6 +49,7 @@ FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts
 static unsigned long allowSleepAt = 0;
 static bool softSleepActive = false;
 static bool softSleepPowerReleased = true;
+static bool softSleepWindowOpen = true;
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -307,6 +311,7 @@ void enterSoftSleep(bool fromTimeout = false) {
 
   softSleepActive = true;
   softSleepPowerReleased = fromTimeout || !gpio.isPressed(HalGPIO::BTN_POWER);
+  softSleepWindowOpen = true;
   activityManager.goToSoftSleep(fromTimeout);
   SOFT_SLEEP_SLIDESHOW.begin(renderer);
 
@@ -321,11 +326,33 @@ void enterSoftSleep(bool fromTimeout = false) {
 
 void exitSoftSleep() {
   softSleepActive = false;
+  softSleepWindowOpen = true;
   SOFT_SLEEP_SLIDESHOW.end();
   POWER_LOG.setMode(PowerLog::Mode::Active);
   powerManager.setPowerSaving(false);
   allowSleepAt = millis() + 2000;
   activityManager.popActivity();
+}
+
+bool waitForSoftSleepWake(uint32_t waitMs) {
+  const uint32_t boundedWaitMs = std::max<uint32_t>(waitMs, 1000);
+  powerManager.setPowerSaving(true);
+
+  gpio_wakeup_enable(static_cast<gpio_num_t>(InputManager::POWER_BUTTON_PIN), GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(boundedWaitMs) * 1000ULL);
+
+  const esp_err_t err = esp_light_sleep_start();
+  gpio_wakeup_disable(static_cast<gpio_num_t>(InputManager::POWER_BUTTON_PIN));
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+
+  if (err != ESP_OK) {
+    delay(std::min<uint32_t>(boundedWaitMs, 1000));
+    return false;
+  }
+
+  return digitalRead(InputManager::POWER_BUTTON_PIN) == LOW;
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -550,6 +577,37 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.update();
+
+  if (softSleepActive) {
+    if (!softSleepPowerReleased) {
+      if (gpio.wasReleased(HalGPIO::BTN_POWER) || !gpio.isPressed(HalGPIO::BTN_POWER)) {
+        softSleepPowerReleased = true;
+      }
+      waitForSoftSleepWake(1000);
+      return;
+    }
+
+    if (gpio.isPressed(HalGPIO::BTN_POWER) || gpio.wasPressed(HalGPIO::BTN_POWER)) {
+      exitSoftSleep();
+      return;
+    }
+
+    if (softSleepWindowOpen) {
+      POWER_LOG.loop();
+      AUTO_SYNC_SCHEDULER.loop(true);
+      SOFT_SLEEP_SLIDESHOW.loop(renderer);
+      softSleepWindowOpen = false;
+    }
+
+    const uint32_t waitMs = SOFT_SLEEP_SLIDESHOW.millisUntilNextChange();
+    if (waitForSoftSleepWake(waitMs)) {
+      exitSoftSleep();
+      return;
+    }
+    softSleepWindowOpen = true;
+    return;
+  }
+
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
@@ -579,41 +637,6 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-
-  if (softSleepActive) {
-    POWER_LOG.loop();
-    AUTO_SYNC_SCHEDULER.loop(true);
-    SOFT_SLEEP_SLIDESHOW.loop(renderer);
-    if (!softSleepPowerReleased) {
-      if (gpio.wasReleased(HalGPIO::BTN_POWER) || !gpio.isPressed(HalGPIO::BTN_POWER)) {
-        softSleepPowerReleased = true;
-      }
-      powerManager.setPowerSaving(true);
-      delay(500);
-      return;
-    }
-    if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > 2500) {
-      POWER_LOG.event("soft_sleep_force_hard_sleep");
-      enterDeepSleep();
-      return;
-    }
-    if (gpio.wasReleased(HalGPIO::BTN_UP)) {
-      SOFT_SLEEP_SLIDESHOW.previous(renderer);
-      return;
-    }
-    if (gpio.wasReleased(HalGPIO::BTN_DOWN)) {
-      SOFT_SLEEP_SLIDESHOW.next(renderer);
-      return;
-    }
-    if (gpio.wasAnyReleased() || (gpio.wasAnyPressed() && !gpio.isPressed(HalGPIO::BTN_POWER))) {
-      exitSoftSleep();
-      lastActivityTime = millis();
-      return;
-    }
-    powerManager.setPowerSaving(true);
-    delay(500);
-    return;
-  }
 
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
       activityManager.preventAutoSleep()) {
