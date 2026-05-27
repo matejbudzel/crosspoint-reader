@@ -68,6 +68,31 @@ std::string downloadErrorText(HttpDownloader::DownloadError error) {
   }
   return "Unknown error";
 }
+
+std::string formatInterval(uint32_t totalMinutes) {
+  if (totalMinutes == 0) {
+    return "0min";
+  }
+
+  const uint32_t days = totalMinutes / (24 * 60);
+  totalMinutes %= 24 * 60;
+  const uint32_t hours = totalMinutes / 60;
+  const uint32_t minutes = totalMinutes % 60;
+
+  std::string result;
+  if (days > 0) {
+    result += std::to_string(days) + "d";
+  }
+  if (hours > 0) {
+    if (!result.empty()) result += ":";
+    result += std::to_string(hours) + "h";
+  }
+  if (minutes > 0) {
+    if (!result.empty()) result += ":";
+    result += std::to_string(minutes) + "min";
+  }
+  return result;
+}
 }  // namespace
 
 void AutoSyncActivity::onEnter() {
@@ -517,9 +542,7 @@ std::string AutoSyncActivity::menuSubtitle(int index) const {
     return "";
   }
   const Job& job = jobs_[jobIndex];
-  char interval[24];
-  snprintf(interval, sizeof(interval), "%lum | ", static_cast<unsigned long>(job.intervalMinutes));
-  return std::string(interval) + job.path;
+  return formatInterval(job.intervalMinutes) + " | " + job.path;
 }
 
 std::string AutoSyncActivity::menuValue(int index) const {
