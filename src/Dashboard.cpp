@@ -4,6 +4,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include "PowerLog.h"
 #include "activities/RenderLock.h"
 #include "components/UITheme.h"
+#include "fontIds.h"
 
 Dashboard DASHBOARD;
 
@@ -24,6 +26,7 @@ constexpr const char* FALLBACK_SLEEP_DIR = "/sleep";
 constexpr int OVERLAY_HEIGHT = 28;
 constexpr int OVERLAY_MARGIN = 8;
 constexpr int OVERLAY_PADDING = 8;
+constexpr int OVERLAY_GAP = 10;
 constexpr int DOT_RADIUS = 2;
 constexpr int DOT_SPACING = 8;
 
@@ -76,6 +79,7 @@ void Dashboard::next(GfxRenderer& renderer, const char* reason) {
   }
 
   currentIndex_ = (currentIndex_ + 1) % files_.size();
+  currentFilename_ = files_[currentIndex_];
   renderCurrent(renderer, reason ? reason : "dashboard_image_next");
 }
 
@@ -89,6 +93,7 @@ void Dashboard::previous(GfxRenderer& renderer) {
   }
 
   currentIndex_ = currentIndex_ == 0 ? files_.size() - 1 : currentIndex_ - 1;
+  currentFilename_ = files_[currentIndex_];
   renderCurrent(renderer, "dashboard_image_prev");
 }
 
@@ -97,8 +102,9 @@ bool Dashboard::renderNextForSleep(GfxRenderer& renderer) {
   if (!scanFiles()) {
     return false;
   }
-  if (hasRendered_) {
+  if (hasRendered_ || !APP_STATE.dashboardLastImage.empty()) {
     currentIndex_ = (currentIndex_ + 1) % files_.size();
+    currentFilename_ = files_[currentIndex_];
   }
   return renderCurrent(renderer, "dashboard_sleep");
 }
@@ -238,10 +244,17 @@ bool Dashboard::renderCurrent(GfxRenderer& renderer, const char* eventName) {
 
 void Dashboard::drawOverlay(GfxRenderer& renderer) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int visibleDots = static_cast<int>(std::min<size_t>(files_.size(), 24));
-  const int dotsWidth = visibleDots > 0 ? (visibleDots - 1) * DOT_SPACING + DOT_RADIUS * 2 + OVERLAY_PADDING : 0;
-  const int batteryAreaWidth = metrics.batteryWidth + 8 + 28;
-  const int overlayWidth = std::max(78, OVERLAY_PADDING + dotsWidth + batteryAreaWidth);
+  const std::string batteryText = std::to_string(powerManager.getBatteryPercentage()) + "%";
+  const int batteryTextWidth = renderer.getTextWidth(SMALL_FONT_ID, batteryText.c_str());
+  const int batteryBlockWidth = batteryTextWidth + BaseTheme::batteryPercentSpacing + metrics.batteryWidth;
+  const int maxOverlayWidth = renderer.getScreenWidth() - OVERLAY_MARGIN * 2;
+  const int maxDotsWidth = std::max(0, maxOverlayWidth - OVERLAY_PADDING * 2 - OVERLAY_GAP - batteryBlockWidth);
+  const int maxVisibleDots =
+      maxDotsWidth >= DOT_RADIUS * 2 ? ((maxDotsWidth - DOT_RADIUS * 2) / DOT_SPACING) + 1 : 0;
+  const int visibleDots = std::min(static_cast<int>(files_.size()), maxVisibleDots);
+  const int dotsWidth = visibleDots > 0 ? (visibleDots - 1) * DOT_SPACING + DOT_RADIUS * 2 : 0;
+  const int overlayWidth =
+      std::min(maxOverlayWidth, std::max(78, OVERLAY_PADDING * 2 + dotsWidth + OVERLAY_GAP + batteryBlockWidth));
   const int x = renderer.getScreenWidth() - overlayWidth - OVERLAY_MARGIN;
   const int y = OVERLAY_MARGIN;
 
@@ -250,16 +263,19 @@ void Dashboard::drawOverlay(GfxRenderer& renderer) const {
 
   if (visibleDots > 0) {
     const int dotsY = y + OVERLAY_HEIGHT / 2 + 2;
-    int dotsX = x + OVERLAY_PADDING + DOT_RADIUS;
+    const int dotsX = x + OVERLAY_PADDING + DOT_RADIUS;
+    const int firstDotIndex = currentIndex_ >= static_cast<size_t>(visibleDots)
+                                  ? static_cast<int>(currentIndex_) - visibleDots + 1
+                                  : 0;
     for (int i = 0; i < visibleDots; ++i) {
-      drawDot(renderer, dotsX + i * DOT_SPACING, dotsY, static_cast<size_t>(i) == currentIndex_);
+      drawDot(renderer, dotsX + i * DOT_SPACING, dotsY, static_cast<size_t>(firstDotIndex + i) == currentIndex_);
     }
   }
 
-  GUI.drawBatteryRight(renderer,
-                       Rect{x + overlayWidth - metrics.batteryWidth - 8, y + 2, metrics.batteryWidth,
-                            metrics.batteryHeight},
-                       true);
+  const int batteryIconX = x + overlayWidth - OVERLAY_PADDING - metrics.batteryWidth;
+  const int batteryTextX = batteryIconX - BaseTheme::batteryPercentSpacing - batteryTextWidth;
+  renderer.drawText(SMALL_FONT_ID, batteryTextX, y + 2, batteryText.c_str());
+  GUI.drawBatteryRight(renderer, Rect{batteryIconX, y + 2, metrics.batteryWidth, metrics.batteryHeight}, false);
 }
 
 void Dashboard::drawDot(GfxRenderer& renderer, int centerX, int centerY, bool selected) const {
