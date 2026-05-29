@@ -8,6 +8,7 @@
 #include <Logging.h>
 
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <set>
 
@@ -55,6 +56,46 @@ bool ensureParentDirectory(const std::string& path) {
     return isDirectory;
   }
   return Storage.mkdir(parent.c_str());
+}
+
+bool filesEqual(const std::string& leftPath, const std::string& rightPath) {
+  HalFile left = Storage.open(leftPath.c_str());
+  HalFile right = Storage.open(rightPath.c_str());
+  if (!left || !right) {
+    if (left) left.close();
+    if (right) right.close();
+    return false;
+  }
+
+  if (left.fileSize64() != right.fileSize64()) {
+    left.close();
+    right.close();
+    return false;
+  }
+
+  uint8_t leftBuffer[512];
+  uint8_t rightBuffer[512];
+  while (left.available() > 0 || right.available() > 0) {
+    const int leftRead = left.read(leftBuffer, sizeof(leftBuffer));
+    const int rightRead = right.read(rightBuffer, sizeof(rightBuffer));
+    if (leftRead != rightRead || leftRead < 0) {
+      left.close();
+      right.close();
+      return false;
+    }
+    if (leftRead == 0) {
+      break;
+    }
+    if (memcmp(leftBuffer, rightBuffer, static_cast<size_t>(leftRead)) != 0) {
+      left.close();
+      right.close();
+      return false;
+    }
+  }
+
+  left.close();
+  right.close();
+  return true;
 }
 
 std::string downloadErrorText(HttpDownloader::DownloadError error) {
@@ -196,8 +237,10 @@ void AutoSyncActivity::loadMetadata() {
     JsonVariant entry = files[job.path];
     if (entry.is<JsonObject>()) {
       job.lastFetched = entry["lastFetched"] | 0;
+      job.lastChanged = entry["lastChanged"] | 0;
     } else {
       job.lastFetched = entry | 0;
+      job.lastChanged = job.lastFetched;
     }
   }
 }
@@ -210,6 +253,9 @@ void AutoSyncActivity::saveMetadata() const {
   for (const Job& job : jobs_) {
     if (job.lastFetched > 0) {
       files[job.path]["lastFetched"] = job.lastFetched;
+      if (job.lastChanged > 0) {
+        files[job.path]["lastChanged"] = job.lastChanged;
+      }
     }
   }
 
@@ -568,6 +614,24 @@ bool AutoSyncActivity::fetchJob(size_t index, NetworkSession& session) {
     }
   }
 
+  const bool hadExistingFile = Storage.exists(job.path.c_str());
+  const bool changed = !hadExistingFile || !filesEqual(job.path, tempPath);
+  const uint64_t fetchedAt = APP_TIME.isKnown() ? APP_TIME.now() : 0;
+
+  if (!changed) {
+    Storage.remove(tempPath.c_str());
+    job.status = "Unchanged";
+    if (fetchedAt > 0) {
+      job.lastFetched = fetchedAt;
+      job.stale = false;
+    }
+    message_ = "Unchanged " + jobDisplayName(job);
+    downloadProgress_ = downloadTotal_;
+    appendLog("Unchanged " + jobDisplayName(job) + ": " + job.url + " -> " + job.path);
+    requestUpdate();
+    return true;
+  }
+
   if (Storage.exists(job.path.c_str())) {
     Storage.remove(job.path.c_str());
   }
@@ -580,9 +644,10 @@ bool AutoSyncActivity::fetchJob(size_t index, NetworkSession& session) {
     return false;
   }
 
-  job.status = "OK";
-  if (APP_TIME.isKnown()) {
-    job.lastFetched = APP_TIME.now();
+  job.status = hadExistingFile ? "Changed" : "OK";
+  if (fetchedAt > 0) {
+    job.lastFetched = fetchedAt;
+    job.lastChanged = fetchedAt;
     job.stale = false;
   }
   message_ = "Fetched " + jobDisplayName(job);

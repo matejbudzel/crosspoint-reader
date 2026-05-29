@@ -22,6 +22,7 @@ class AutoSyncActivity final : public Activity {
     std::string path;
     uint32_t intervalMinutes = 0;
     uint64_t lastFetched = 0;
+    uint64_t lastChanged = 0;
     bool stale = false;
     std::string status;
   };
