@@ -7,9 +7,11 @@
 #include <time.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 namespace {
 constexpr const char* LOG_TAG = "TIME";
+constexpr const char* BRATISLAVA_TZ = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 constexpr time_t MIN_VALID_EPOCH = 1609459200;  // 2021-01-01T00:00:00Z
 constexpr int MAX_ATTEMPTS = 50;
 constexpr int ATTEMPT_DELAY_MS = 100;
@@ -37,7 +39,7 @@ AppTime::SyncResult AppTime::syncFromNetwork() {
 
   LOG_INF(LOG_TAG, "Starting NTP sync");
   sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
-  configTzTime("UTC0", "pool.ntp.org", "time.nist.gov");
+  configTzTime(BRATISLAVA_TZ, "pool.ntp.org", "time.nist.gov");
 
   for (int i = 0; i < MAX_ATTEMPTS; ++i) {
     const time_t current = time(nullptr);
@@ -56,19 +58,17 @@ AppTime::SyncResult AppTime::syncFromNetwork() {
 }
 
 bool AppTime::formatTime(char* buffer, size_t bufferSize, uint8_t utcOffsetQuarterHoursBiased, bool use12Hour) const {
+  (void)utcOffsetQuarterHoursBiased;
   if (!known_ || buffer == nullptr || bufferSize < (use12Hour ? 9u : 6u)) {
     return false;
   }
 
-  if (utcOffsetQuarterHoursBiased > 104) {
-    utcOffsetQuarterHoursBiased = 104;
-  }
+  setenv("TZ", BRATISLAVA_TZ, 1);
+  tzset();
 
-  const int offsetQuarterHours = static_cast<int>(utcOffsetQuarterHoursBiased) - 48;
-  const int64_t localEpoch = static_cast<int64_t>(now()) + static_cast<int64_t>(offsetQuarterHours) * 15 * 60;
-  const time_t localTime = static_cast<time_t>(localEpoch);
+  const time_t localTime = static_cast<time_t>(now());
   struct tm timeinfo;
-  gmtime_r(&localTime, &timeinfo);
+  localtime_r(&localTime, &timeinfo);
 
   if (use12Hour) {
     const bool pm = timeinfo.tm_hour >= 12;
