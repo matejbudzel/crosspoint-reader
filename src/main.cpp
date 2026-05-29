@@ -25,14 +25,17 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "AppTime.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "activities/settings/TimeSyncActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include "WifiCredentialStore.h"
 
 MappedInputManager mappedInputManager(gpio);
 GfxRenderer renderer(display);
@@ -41,6 +44,8 @@ FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
+static bool bootTimeSyncQueued = false;
+static bool bootTimeSyncAllowed = false;
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -378,6 +383,7 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  WIFI_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
@@ -504,6 +510,8 @@ void setup() {
   }
 
   // Ensure we're not still holding the power button before leaving setup
+  bootTimeSyncAllowed = !isSilentReboot && !recoveryFirmwareMode && !HalSystem::isRebootFromPanic() &&
+                        !WIFI_STORE.getCredentials().empty();
   waitForPowerRelease();
   allowSleepAt = millis() + 2000;
 }
@@ -608,6 +616,10 @@ void loop() {
 
   const unsigned long activityStartTime = millis();
   activityManager.loop();
+  if (!bootTimeSyncQueued && bootTimeSyncAllowed && !APP_TIME.isKnown()) {
+    bootTimeSyncQueued = true;
+    activityManager.pushActivity(std::make_unique<TimeSyncActivity>(renderer, mappedInputManager));
+  }
   const unsigned long activityDuration = millis() - activityStartTime;
 
   const unsigned long loopDuration = millis() - loopStartTime;

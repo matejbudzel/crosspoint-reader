@@ -17,6 +17,8 @@
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
+#include "TimeSyncActivity.h"
+#include "AppTime.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -51,6 +53,9 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.insert(controlsSettings.begin(),
                           SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
+  systemSettings.push_back(SettingInfo::ActionValue(StrId::STR_TIME, SettingAction::TimeSync, [] {
+    return APP_TIME.statusText(SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1);
+  }));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
@@ -250,6 +255,12 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::TimeSync:
+        startActivityForResult(std::make_unique<TimeSyncActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+          SETTINGS.saveToFile();
+          rebuildSettingsLists();
+        });
+        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -331,15 +342,23 @@ void SettingsActivity::render(RenderLock&&) {
           }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
           valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+        } else if (setting.type == SettingType::ACTION && setting.stringGetter) {
+          valueText = setting.stringGetter();
         }
         return valueText;
       },
       true);
 
   // Draw help text
-  const auto confirmLabel = (selectedSettingIndex == 0)
-                                ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-                                : tr(STR_TOGGLE);
+  const char* confirmLabel = tr(STR_TOGGLE);
+  if (selectedSettingIndex == 0) {
+    confirmLabel = I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount]);
+  } else if (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount) {
+    const auto& setting = (*currentSettings)[selectedSettingIndex - 1];
+    if (setting.action == SettingAction::TimeSync) {
+      confirmLabel = tr(STR_UPDATE);
+    }
+  }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

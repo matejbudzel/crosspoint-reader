@@ -21,6 +21,8 @@ class AutoSyncActivity final : public Activity {
     std::string url;
     std::string path;
     uint32_t intervalMinutes = 0;
+    uint64_t lastFetched = 0;
+    bool stale = false;
     std::string status;
   };
 
@@ -37,7 +39,12 @@ class AutoSyncActivity final : public Activity {
 
   void loadJobs();
   bool parseJobsFile(const char* json);
+  void loadMetadata();
+  void saveMetadata() const;
+  void refreshStaleStatus();
+  bool isJobStale(const Job& job) const;
   void fetchSelected();
+  void fetchStale();
   void fetchAll();
   void openLog();
   bool fetchJob(size_t index, NetworkSession& session);
@@ -58,4 +65,6 @@ class AutoSyncActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return state_ == State::Fetching; }
+
+  static bool hasStaleJobs();
 };

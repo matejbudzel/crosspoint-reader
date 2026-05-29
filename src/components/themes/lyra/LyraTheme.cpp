@@ -76,6 +76,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return HotspotIcon;
       case UIIcon::Sync:
         return SyncIcon;
+      case UIIcon::SyncStale:
+        return SyncStaleIcon;
       default:
         return nullptr;
     }

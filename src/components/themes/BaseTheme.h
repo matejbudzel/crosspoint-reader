@@ -97,7 +97,7 @@ struct ThemeMetrics {
   int textFieldLineEndOffset;
 };
 
-enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Sync };
+enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Sync, SyncStale };
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
 

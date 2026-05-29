@@ -23,6 +23,7 @@ enum class SettingAction {
   SdFirmwareUpdate,
   Language,
   DownloadFonts,
+  TimeSync,
 };
 
 struct SettingInfo {
@@ -87,6 +88,12 @@ struct SettingInfo {
     s.nameId = nameId;
     s.type = SettingType::ACTION;
     s.action = action;
+    return s;
+  }
+
+  static SettingInfo ActionValue(StrId nameId, SettingAction action, std::function<std::string()> getter) {
+    SettingInfo s = Action(nameId, action);
+    s.stringGetter = std::move(getter);
     return s;
   }
 

@@ -8,8 +8,10 @@
 #include <Logging.h>
 
 #include <cstdio>
+#include <map>
 #include <set>
 
+#include "AppTime.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -20,12 +22,14 @@ constexpr const char* JOBS_FILE = "/.crosspoint/auto-sync.json";
 constexpr const char* JOBS_FILE_RELATIVE = ".crosspoint/auto-sync.json";
 constexpr const char* LOG_FILE = "/.crosspoint/auto-sync.log";
 constexpr const char* LOG_VIEW_FILE = "/.crosspoint/auto-sync-log.txt";
+constexpr const char* METADATA_FILE = "/.crosspoint/sync-metadata.json";
 constexpr const char* MANIFEST_DOWNLOAD_TMP = "/.crosspoint/auto-sync.next.json";
 constexpr const char* LOG_TAG = "SYNC";
-constexpr int ACTION_FETCH_ALL = 0;
-constexpr int ACTION_RELOAD = 1;
-constexpr int ACTION_OPEN_LOG = 2;
-constexpr int ACTION_COUNT = 3;
+constexpr int ACTION_FETCH_STALE = 0;
+constexpr int ACTION_FETCH_ALL = 1;
+constexpr int ACTION_RELOAD = 2;
+constexpr int ACTION_OPEN_LOG = 3;
+constexpr int ACTION_COUNT = 4;
 
 bool isHttpUrl(const std::string& url) { return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0; }
 
@@ -117,6 +121,8 @@ void AutoSyncActivity::loadJobs() {
     return;
   }
 
+  loadMetadata();
+  refreshStaleStatus();
   state_ = State::Ready;
   message_ = jobs_.empty() ? "No jobs in file" : "Ready";
 }
@@ -168,6 +174,67 @@ bool AutoSyncActivity::parseJobsFile(const char* json) {
   }
 
   return true;
+}
+
+void AutoSyncActivity::loadMetadata() {
+  const String json = Storage.readFile(METADATA_FILE);
+  if (json.isEmpty()) {
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json.c_str())) {
+    return;
+  }
+
+  JsonObject files = doc["files"].as<JsonObject>();
+  if (files.isNull()) {
+    return;
+  }
+
+  for (Job& job : jobs_) {
+    JsonVariant entry = files[job.path];
+    if (entry.is<JsonObject>()) {
+      job.lastFetched = entry["lastFetched"] | 0;
+    } else {
+      job.lastFetched = entry | 0;
+    }
+  }
+}
+
+void AutoSyncActivity::saveMetadata() const {
+  Storage.mkdir("/.crosspoint");
+  JsonDocument doc;
+  doc["version"] = 1;
+  JsonObject files = doc["files"].to<JsonObject>();
+  for (const Job& job : jobs_) {
+    if (job.lastFetched > 0) {
+      files[job.path]["lastFetched"] = job.lastFetched;
+    }
+  }
+
+  std::string json;
+  serializeJsonPretty(doc, json);
+  Storage.writeFile(METADATA_FILE, String(json.c_str()));
+}
+
+bool AutoSyncActivity::isJobStale(const Job& job) const {
+  if (!APP_TIME.isKnown() || job.intervalMinutes == 0) {
+    return false;
+  }
+  if (job.lastFetched == 0) {
+    return true;
+  }
+  return job.lastFetched + static_cast<uint64_t>(job.intervalMinutes) * 60 < APP_TIME.now();
+}
+
+void AutoSyncActivity::refreshStaleStatus() {
+  for (Job& job : jobs_) {
+    job.stale = isJobStale(job);
+    if (job.stale && (job.status == "Not fetched" || job.status == "OK")) {
+      job.status = "Stale";
+    }
+  }
 }
 
 bool AutoSyncActivity::validateJob(const Job& job, std::string& error) const {
@@ -280,7 +347,70 @@ void AutoSyncActivity::fetchSelected() {
   }
 
   fetchJob(static_cast<size_t>(jobIndex), session);
+  saveMetadata();
+  refreshStaleStatus();
   session.disconnect();
+  state_ = State::Ready;
+  requestUpdate();
+}
+
+void AutoSyncActivity::fetchStale() {
+  if (!APP_TIME.isKnown()) {
+    message_ = "Time not set";
+    requestUpdate();
+    return;
+  }
+
+  refreshStaleStatus();
+  size_t staleCount = 0;
+  for (const Job& job : jobs_) {
+    if (job.stale) {
+      staleCount++;
+    }
+  }
+  if (staleCount == 0) {
+    message_ = "No stale items";
+    requestUpdate();
+    return;
+  }
+
+  NetworkSession session = NETWORK_MANAGER.claim("Sync", NetworkClaimMode::Foreground);
+  if (!session.isActive()) {
+    message_ = "Network busy";
+    appendLog("Network busy for fetch stale");
+    requestUpdate();
+    return;
+  }
+
+  state_ = State::Fetching;
+  currentJob_ = 0;
+  totalJobs_ = staleCount;
+  if (!connectForFetch(session)) {
+    session.disconnect();
+    state_ = State::Ready;
+    requestUpdate();
+    return;
+  }
+
+  size_t fetched = 0;
+  size_t failed = 0;
+  for (size_t i = 0; i < jobs_.size(); ++i) {
+    if (!jobs_[i].stale) {
+      continue;
+    }
+    if (fetchJob(i, session)) {
+      fetched++;
+    } else {
+      failed++;
+    }
+  }
+  char summary[48];
+  snprintf(summary, sizeof(summary), "Done: %lu OK, %lu failed", static_cast<unsigned long>(fetched),
+           static_cast<unsigned long>(failed));
+  session.disconnect();
+  saveMetadata();
+  refreshStaleStatus();
+  message_ = summary;
   state_ = State::Ready;
   requestUpdate();
 }
@@ -323,6 +453,8 @@ void AutoSyncActivity::fetchAll() {
   snprintf(summary, sizeof(summary), "Done: %lu OK, %lu failed", static_cast<unsigned long>(fetched),
            static_cast<unsigned long>(failed));
   session.disconnect();
+  saveMetadata();
+  refreshStaleStatus();
   message_ = summary;
   state_ = State::Ready;
   requestUpdate();
@@ -449,6 +581,10 @@ bool AutoSyncActivity::fetchJob(size_t index, NetworkSession& session) {
   }
 
   job.status = "OK";
+  if (APP_TIME.isKnown()) {
+    job.lastFetched = APP_TIME.now();
+    job.stale = false;
+  }
   message_ = "Fetched " + jobDisplayName(job);
   downloadProgress_ = downloadTotal_;
   appendLog("Fetched " + jobDisplayName(job) + ": " + job.url + " -> " + job.path);
@@ -471,6 +607,8 @@ void AutoSyncActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     if (selectedIndex_ == ACTION_FETCH_ALL) {
       fetchAll();
+    } else if (selectedIndex_ == ACTION_FETCH_STALE) {
+      fetchStale();
     } else if (selectedIndex_ == ACTION_RELOAD) {
       loadJobs();
       requestUpdate();
@@ -494,6 +632,9 @@ void AutoSyncActivity::loop() {
 }
 
 std::string AutoSyncActivity::menuTitle(int index) const {
+  if (index == ACTION_FETCH_STALE) {
+    return "Fetch stale";
+  }
   if (index == ACTION_FETCH_ALL) {
     return "Fetch all";
   }
@@ -511,6 +652,9 @@ std::string AutoSyncActivity::menuTitle(int index) const {
 }
 
 std::string AutoSyncActivity::menuSubtitle(int index) const {
+  if (index == ACTION_FETCH_STALE) {
+    return APP_TIME.isKnown() ? "Run jobs past their refresh interval" : "Time not set";
+  }
   if (index == ACTION_FETCH_ALL) {
     return "Run every job from auto-sync.json";
   }
@@ -529,11 +673,70 @@ std::string AutoSyncActivity::menuSubtitle(int index) const {
 }
 
 std::string AutoSyncActivity::menuValue(int index) const {
+  if (index == ACTION_FETCH_STALE) {
+    if (!APP_TIME.isKnown()) {
+      return "";
+    }
+    size_t count = 0;
+    for (const Job& job : jobs_) {
+      if (job.stale) {
+        count++;
+      }
+    }
+    return std::to_string(count);
+  }
   const int jobIndex = index - ACTION_COUNT;
   if (jobIndex < 0 || jobIndex >= static_cast<int>(jobs_.size())) {
     return "";
   }
   return jobs_[jobIndex].status;
+}
+
+bool AutoSyncActivity::hasStaleJobs() {
+  if (!APP_TIME.isKnown()) {
+    return false;
+  }
+
+  const String json = Storage.readFile(JOBS_FILE);
+  if (json.isEmpty()) {
+    return false;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json.c_str())) {
+    return false;
+  }
+
+  JsonDocument metadataDoc;
+  std::map<std::string, uint64_t> fetchedByPath;
+  const String metadataJson = Storage.readFile(METADATA_FILE);
+  if (!metadataJson.isEmpty() && !deserializeJson(metadataDoc, metadataJson.c_str())) {
+    JsonObject files = metadataDoc["files"].as<JsonObject>();
+    for (JsonPair item : files) {
+      JsonVariant entry = item.value();
+      fetchedByPath[item.key().c_str()] = entry.is<JsonObject>() ? (entry["lastFetched"] | 0) : (entry | 0);
+    }
+  }
+
+  JsonArray jobs = doc["jobs"].as<JsonArray>();
+  if (jobs.isNull()) {
+    return false;
+  }
+
+  const uint64_t now = APP_TIME.now();
+  for (JsonObject item : jobs) {
+    const uint32_t intervalMinutes = item["intervalMinutes"] | 0;
+    if (intervalMinutes == 0) {
+      continue;
+    }
+    const std::string path = normalizeJobPath(item["path"] | "");
+    const uint64_t lastFetched = fetchedByPath[path];
+    if (lastFetched == 0 || lastFetched + static_cast<uint64_t>(intervalMinutes) * 60 < now) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 std::string AutoSyncActivity::jobDisplayName(const Job& job) const {

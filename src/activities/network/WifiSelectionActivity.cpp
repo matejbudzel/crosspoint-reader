@@ -8,6 +8,7 @@
 
 #include <map>
 
+#include "AppTime.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
@@ -258,6 +259,9 @@ void WifiSelectionActivity::checkConnectionStatus() {
         SETTINGS.clockHasBeenSynced = 1;
         SETTINGS.saveToFile();
       }
+    }
+    if (!APP_TIME.isKnown()) {
+      APP_TIME.syncFromNetwork();
     }
 
     // Save this as the last connected network - SD card operations need lock as
