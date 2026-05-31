@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "activities/Activity.h"
 #include "network/HttpDownloader.h"
@@ -50,8 +51,8 @@ class AutoSyncActivity final : public Activity {
   void openLog();
   bool fetchJob(size_t index, NetworkSession& session);
   bool connectForFetch(NetworkSession& session);
-  bool validateManifestFile(const std::string& path, std::string& error) const;
-  bool validateJob(const Job& job, std::string& error) const;
+  static bool validateManifestFile(const std::string& path, std::string& error);
+  static bool validateJob(const Job& job, std::string& error);
   void appendLog(const std::string& line);
   std::string jobDisplayName(const Job& job) const;
   std::string menuTitle(int index) const;
@@ -59,6 +60,21 @@ class AutoSyncActivity final : public Activity {
   std::string menuValue(int index) const;
 
  public:
+  struct StaleJobInfo {
+    std::string name;
+    std::string path;
+  };
+
+  struct FetchSummary {
+    size_t fetched = 0;
+    size_t failed = 0;
+    std::string message;
+  };
+
+  using ProgressCallback =
+      std::function<void(const std::string& message, size_t currentJob, size_t totalJobs, size_t downloaded,
+                         size_t total)>;
+
   explicit AutoSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Sync", renderer, mappedInput) {}
 
@@ -68,4 +84,6 @@ class AutoSyncActivity final : public Activity {
   bool preventAutoSleep() override { return state_ == State::Fetching; }
 
   static bool hasStaleJobs();
+  static std::vector<StaleJobInfo> staleJobs();
+  static FetchSummary fetchStaleWithSession(NetworkSession& session, const ProgressCallback& progress = nullptr);
 };

@@ -283,7 +283,7 @@ void AutoSyncActivity::refreshStaleStatus() {
   }
 }
 
-bool AutoSyncActivity::validateJob(const Job& job, std::string& error) const {
+bool AutoSyncActivity::validateJob(const Job& job, std::string& error) {
   if (!isHttpUrl(job.url)) {
     error = "Invalid URL";
     return false;
@@ -303,7 +303,7 @@ bool AutoSyncActivity::validateJob(const Job& job, std::string& error) const {
   return true;
 }
 
-bool AutoSyncActivity::validateManifestFile(const std::string& path, std::string& error) const {
+bool AutoSyncActivity::validateManifestFile(const std::string& path, std::string& error) {
   const String json = Storage.readFile(path.c_str());
   if (json.isEmpty()) {
     error = "Manifest is empty";
@@ -758,18 +758,23 @@ std::string AutoSyncActivity::menuValue(int index) const {
 }
 
 bool AutoSyncActivity::hasStaleJobs() {
+  return !staleJobs().empty();
+}
+
+std::vector<AutoSyncActivity::StaleJobInfo> AutoSyncActivity::staleJobs() {
+  std::vector<StaleJobInfo> result;
   if (!APP_TIME.isKnown()) {
-    return false;
+    return result;
   }
 
   const String json = Storage.readFile(JOBS_FILE);
   if (json.isEmpty()) {
-    return false;
+    return result;
   }
 
   JsonDocument doc;
   if (deserializeJson(doc, json.c_str())) {
-    return false;
+    return result;
   }
 
   JsonDocument metadataDoc;
@@ -785,7 +790,7 @@ bool AutoSyncActivity::hasStaleJobs() {
 
   JsonArray jobs = doc["jobs"].as<JsonArray>();
   if (jobs.isNull()) {
-    return false;
+    return result;
   }
 
   const uint64_t now = APP_TIME.now();
@@ -797,11 +802,182 @@ bool AutoSyncActivity::hasStaleJobs() {
     const std::string path = normalizeJobPath(item["path"] | "");
     const uint64_t lastFetched = fetchedByPath[path];
     if (lastFetched == 0 || lastFetched + static_cast<uint64_t>(intervalMinutes) * 60 < now) {
-      return true;
+      const std::string name = item["name"] | "";
+      result.push_back({name.empty() ? path : name, path});
     }
   }
 
-  return false;
+  return result;
+}
+
+AutoSyncActivity::FetchSummary AutoSyncActivity::fetchStaleWithSession(NetworkSession& session,
+                                                                       const ProgressCallback& progress) {
+  FetchSummary summary;
+  if (!APP_TIME.isKnown()) {
+    summary.message = "Time not set";
+    return summary;
+  }
+  if (!session.isActive()) {
+    summary.message = "Network busy";
+    return summary;
+  }
+
+  const String json = Storage.readFile(JOBS_FILE);
+  if (json.isEmpty()) {
+    summary.message = std::string("Missing ") + JOBS_FILE;
+    return summary;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json.c_str())) {
+    summary.message = "JSON error";
+    return summary;
+  }
+
+  JsonArray items = doc["jobs"].as<JsonArray>();
+  if (items.isNull()) {
+    summary.message = "Missing jobs array";
+    return summary;
+  }
+
+  JsonDocument metadataDoc;
+  std::map<std::string, uint64_t> fetchedByPath;
+  std::map<std::string, uint64_t> changedByPath;
+  const String metadataJson = Storage.readFile(METADATA_FILE);
+  if (!metadataJson.isEmpty() && !deserializeJson(metadataDoc, metadataJson.c_str())) {
+    JsonObject files = metadataDoc["files"].as<JsonObject>();
+    for (JsonPair item : files) {
+      JsonVariant entry = item.value();
+      fetchedByPath[item.key().c_str()] = entry.is<JsonObject>() ? (entry["lastFetched"] | 0) : (entry | 0);
+      changedByPath[item.key().c_str()] =
+          entry.is<JsonObject>() ? (entry["lastChanged"] | 0) : fetchedByPath[item.key().c_str()];
+    }
+  }
+
+  std::vector<Job> jobs;
+  jobs.reserve(items.size());
+  std::set<std::string> seenPaths;
+  for (JsonObject item : items) {
+    Job job;
+    job.name = item["name"] | "";
+    job.url = item["url"] | "";
+    job.path = normalizeJobPath(item["path"] | "");
+    job.intervalMinutes = item["intervalMinutes"] | 0;
+    job.lastFetched = fetchedByPath[job.path];
+    job.lastChanged = changedByPath[job.path];
+
+    if (!job.path.empty() && seenPaths.find(job.path) != seenPaths.end()) {
+      continue;
+    }
+    seenPaths.insert(job.path);
+
+    std::string error;
+    if (!validateJob(job, error)) {
+      continue;
+    }
+
+    if (job.intervalMinutes == 0) {
+      continue;
+    }
+    const uint64_t now = APP_TIME.now();
+    if (job.lastFetched == 0 || job.lastFetched + static_cast<uint64_t>(job.intervalMinutes) * 60 < now) {
+      jobs.push_back(std::move(job));
+    }
+  }
+
+  if (jobs.empty()) {
+    summary.message = "No stale items";
+    return summary;
+  }
+
+  for (size_t i = 0; i < jobs.size(); ++i) {
+    Job& job = jobs[i];
+    const std::string displayName = !job.name.empty() ? job.name : job.path;
+    if (progress) progress("Downloading " + displayName, i + 1, jobs.size(), 0, 0);
+
+    if (!ensureParentDirectory(job.path)) {
+      summary.failed++;
+      continue;
+    }
+
+    const bool updatesManifest = isManifestPath(job.path);
+    const std::string tempPath = updatesManifest ? MANIFEST_DOWNLOAD_TMP : job.path + ".part";
+    Storage.remove(tempPath.c_str());
+
+    const auto downloadResult = HttpDownloader::downloadToFile(
+        job.url, tempPath,
+        [&progress, &displayName, i, &jobs](size_t downloaded, size_t total) {
+          if (progress) progress("Downloading " + displayName, i + 1, jobs.size(), downloaded, total);
+        },
+        nullptr);
+
+    if (downloadResult != HttpDownloader::OK) {
+      Storage.remove(tempPath.c_str());
+      summary.failed++;
+      continue;
+    }
+
+    if (updatesManifest) {
+      std::string error;
+      if (!validateManifestFile(tempPath, error)) {
+        Storage.remove(tempPath.c_str());
+        summary.failed++;
+        continue;
+      }
+    }
+
+    const bool hadExistingFile = Storage.exists(job.path.c_str());
+    const bool changed = !hadExistingFile || !filesEqual(job.path, tempPath);
+    const uint64_t fetchedAt = APP_TIME.now();
+
+    if (changed) {
+      if (Storage.exists(job.path.c_str())) {
+        Storage.remove(job.path.c_str());
+      }
+      if (!Storage.rename(tempPath.c_str(), job.path.c_str())) {
+        Storage.remove(tempPath.c_str());
+        summary.failed++;
+        continue;
+      }
+      job.lastChanged = fetchedAt;
+    } else {
+      Storage.remove(tempPath.c_str());
+    }
+
+    job.lastFetched = fetchedAt;
+    summary.fetched++;
+  }
+
+  Storage.mkdir("/.crosspoint");
+  JsonDocument out;
+  out["version"] = 1;
+  JsonObject files = out["files"].to<JsonObject>();
+  for (const auto& item : fetchedByPath) {
+    if (item.second > 0) {
+      files[item.first]["lastFetched"] = item.second;
+      const uint64_t lastChanged = changedByPath[item.first];
+      if (lastChanged > 0) {
+        files[item.first]["lastChanged"] = lastChanged;
+      }
+    }
+  }
+  for (const Job& job : jobs) {
+    if (job.lastFetched > 0) {
+      files[job.path]["lastFetched"] = job.lastFetched;
+      if (job.lastChanged > 0) {
+        files[job.path]["lastChanged"] = job.lastChanged;
+      }
+    }
+  }
+  std::string metadata;
+  serializeJsonPretty(out, metadata);
+  Storage.writeFile(METADATA_FILE, String(metadata.c_str()));
+
+  char buffer[48];
+  snprintf(buffer, sizeof(buffer), "Done: %lu OK, %lu failed", static_cast<unsigned long>(summary.fetched),
+           static_cast<unsigned long>(summary.failed));
+  summary.message = buffer;
+  return summary;
 }
 
 std::string AutoSyncActivity::jobDisplayName(const Job& job) const {

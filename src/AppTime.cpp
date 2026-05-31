@@ -83,6 +83,27 @@ bool AppTime::formatTime(char* buffer, size_t bufferSize, uint8_t utcOffsetQuart
   return true;
 }
 
+bool AppTime::formatDateAndWeekday(char* buffer, size_t bufferSize, uint8_t utcOffsetQuarterHoursBiased) const {
+  (void)utcOffsetQuarterHoursBiased;
+  if (!known_ || buffer == nullptr || bufferSize < 16u) {
+    return false;
+  }
+
+  static constexpr const char* WEEKDAYS[] = {"Sunday",   "Monday", "Tuesday", "Wednesday",
+                                             "Thursday", "Friday", "Saturday"};
+
+  setenv("TZ", BRATISLAVA_TZ, 1);
+  tzset();
+
+  const time_t localTime = static_cast<time_t>(now());
+  struct tm timeinfo;
+  localtime_r(&localTime, &timeinfo);
+  const int weekday = (timeinfo.tm_wday >= 0 && timeinfo.tm_wday < 7) ? timeinfo.tm_wday : 0;
+  snprintf(buffer, bufferSize, "%s, %04d-%02d-%02d", WEEKDAYS[weekday], timeinfo.tm_year + 1900,
+           timeinfo.tm_mon + 1, timeinfo.tm_mday);
+  return true;
+}
+
 std::string AppTime::statusText(uint8_t utcOffsetQuarterHoursBiased, bool use12Hour) const {
   char buffer[16];
   if (!formatTime(buffer, sizeof(buffer), utcOffsetQuarterHoursBiased, use12Hour)) {

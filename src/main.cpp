@@ -510,7 +510,7 @@ void setup() {
   }
 
   // Ensure we're not still holding the power button before leaving setup
-  bootTimeSyncAllowed = !isSilentReboot && !recoveryFirmwareMode && !HalSystem::isRebootFromPanic() &&
+  bootTimeSyncAllowed = SETTINGS.syncTimeOnBoot && !isSilentReboot && !recoveryFirmwareMode && !HalSystem::isRebootFromPanic() &&
                         !WIFI_STORE.getCredentials().empty();
   waitForPowerRelease();
   allowSleepAt = millis() + 2000;
@@ -618,7 +618,7 @@ void loop() {
   activityManager.loop();
   if (!bootTimeSyncQueued && bootTimeSyncAllowed && !APP_TIME.isKnown()) {
     bootTimeSyncQueued = true;
-    activityManager.pushActivity(std::make_unique<TimeSyncActivity>(renderer, mappedInputManager));
+    activityManager.pushActivity(std::make_unique<TimeSyncActivity>(renderer, mappedInputManager, true));
   }
   const unsigned long activityDuration = millis() - activityStartTime;
 

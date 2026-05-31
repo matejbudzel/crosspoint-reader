@@ -19,6 +19,7 @@ class AppTime {
   SyncResult syncFromNetwork();
   bool formatTime(char* buffer, size_t bufferSize, uint8_t utcOffsetQuarterHoursBiased = 48,
                   bool use12Hour = false) const;
+  bool formatDateAndWeekday(char* buffer, size_t bufferSize, uint8_t utcOffsetQuarterHoursBiased = 48) const;
   std::string statusText(uint8_t utcOffsetQuarterHoursBiased = 48, bool use12Hour = false) const;
 
  private:
