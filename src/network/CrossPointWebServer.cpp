@@ -9,6 +9,7 @@
 #include <esp_task_wdt.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -1297,6 +1298,8 @@ void CrossPointWebServer::handleGetOpdsServers() const {
     doc["name"] = servers[i].name;
     doc["url"] = servers[i].url;
     doc["username"] = servers[i].username;
+    doc["downloadRoot"] = servers[i].downloadRoot;
+    doc["saveLayout"] = servers[i].saveLayout == OpdsSaveLayout::ByAuthor ? "by_author" : "flat";
     // Never expose passwords over the API — only indicate whether one is set
     doc["hasPassword"] = !servers[i].password.empty();
 
@@ -1330,6 +1333,10 @@ void CrossPointWebServer::handlePostOpdsServer() {
   opdsServer.name = doc["name"] | std::string("");
   opdsServer.url = doc["url"] | std::string("");
   opdsServer.username = doc["username"] | std::string("");
+  opdsServer.downloadRoot = doc["downloadRoot"] | std::string("");
+  const char* saveLayout = doc["saveLayout"] | "flat";
+  opdsServer.saveLayout =
+      (strcmp(saveLayout, "by_author") == 0) ? OpdsSaveLayout::ByAuthor : OpdsSaveLayout::Flat;
 
   // The password field is optional in the JSON payload. When absent (vs. present but empty),
   // we preserve the existing password — the web UI omits it when the user hasn't changed it.

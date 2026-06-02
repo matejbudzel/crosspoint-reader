@@ -1,10 +1,17 @@
 #include "OpdsBookBrowserActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <OpdsStream.h>
+#include <Arduino.h>
 #include <WiFi.h>
+
+#include <cstdio>
+#include <cstring>
+#include <sstream>
+#include <vector>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -19,7 +26,68 @@
 
 namespace {
 constexpr int PAGE_ITEMS = 23;
+constexpr unsigned long DOWNLOAD_PROGRESS_RENDER_INTERVAL_MS = 500;
+constexpr size_t DOWNLOAD_PROGRESS_RENDER_BYTES = 16 * 1024;
+
+std::string normalizeDownloadRoot(const std::string& root) {
+  std::vector<std::string> components;
+  std::stringstream stream(root);
+  std::string component;
+
+  while (std::getline(stream, component, '/')) {
+    if (component.empty() || component == "." || component == "..") {
+      continue;
+    }
+    std::string clean = StringUtils::sanitizeFilename(component);
+    if (!clean.empty()) {
+      components.push_back(clean);
+    }
+  }
+
+  if (components.empty()) return "/";
+
+  std::string normalized;
+  for (const auto& part : components) {
+    normalized += "/";
+    normalized += part;
+  }
+  return normalized;
 }
+
+std::string joinPath(const std::string& dir, const std::string& filename) {
+  if (dir.empty() || dir == "/") return "/" + filename;
+  return dir + "/" + filename;
+}
+
+std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
+  const std::string root = normalizeDownloadRoot(server.downloadRoot);
+  std::string title = StringUtils::sanitizeFilename(book.title);
+  if (title.empty()) {
+    title = "untitled";
+  }
+
+  if (server.saveLayout == OpdsSaveLayout::ByAuthor) {
+    std::string author = book.author.empty() ? "unknown" : StringUtils::sanitizeFilename(book.author);
+    if (author.empty()) {
+      author = "unknown";
+    }
+    const std::string dir = joinPath(root, author);
+    if (!Storage.exists(dir.c_str())) {
+      Storage.mkdir(dir.c_str());
+    }
+    return joinPath(dir, title + ".epub");
+  }
+
+  if (!Storage.exists(root.c_str())) {
+    Storage.mkdir(root.c_str());
+  }
+
+  const std::string basename =
+      book.author.empty() ? title : StringUtils::sanitizeFilename(book.author + " - " + book.title);
+  return joinPath(root, basename + ".epub");
+}
+
+}  // namespace
 
 void OpdsBookBrowserActivity::onEnter() {
   Activity::onEnter();
@@ -34,6 +102,7 @@ void OpdsBookBrowserActivity::onEnter() {
   consumeBack = false;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
+  cancelDownload = false;
   requestUpdate();
 
   checkAndConnectWifi();
@@ -66,16 +135,18 @@ void OpdsBookBrowserActivity::loop() {
   }
 
   if (state == BrowserState::ERROR) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
         state = BrowserState::LOADING;
         statusMessage = tr(STR_LOADING);
-        requestUpdate();
+        requestUpdateAndWait();
         fetchFeed(currentPath);
       } else {
         launchWifiSelection();
       }
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    } else if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+               mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       navigateBack();
     }
     return;
@@ -88,13 +159,20 @@ void OpdsBookBrowserActivity::loop() {
     return;
   }
 
-  if (state == BrowserState::DOWNLOADING) return;
+  if (state == BrowserState::DOWNLOADING) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+        mappedInput.isPressed(MappedInputManager::Button::Back)) {
+      cancelDownload = true;
+    }
+    return;
+  }
 
   if (state == BrowserState::BROWSING) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      if (!entries.empty()) {
-        const auto& entry = entries[selectorIndex];
-        entry.type == OpdsEntryType::BOOK ? downloadBook(entry) : navigateToEntry(entry);
+      if (totalRowCount() > 0) {
+        if (const auto* entry = entryForRow(selectorIndex)) {
+          entry->type == OpdsEntryType::BOOK ? downloadBook(*entry) : navigateToEntry(*entry);
+        }
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       navigateBack();
@@ -102,21 +180,22 @@ void OpdsBookBrowserActivity::loop() {
       if (!searchTemplate.empty() && selectorIndex == 0) launchSearch();
     }
 
-    if (!entries.empty()) {
+    const size_t rows = totalRowCount();
+    if (rows > 0) {
       buttonNavigator.onNextRelease([this] {
-        selectorIndex = ButtonNavigator::nextIndex(selectorIndex, entries.size());
+        selectorIndex = ButtonNavigator::nextIndex(selectorIndex, totalRowCount());
         requestUpdate();
       });
       buttonNavigator.onPreviousRelease([this] {
-        selectorIndex = ButtonNavigator::previousIndex(selectorIndex, entries.size());
+        selectorIndex = ButtonNavigator::previousIndex(selectorIndex, totalRowCount());
         requestUpdate();
       });
       buttonNavigator.onNextContinuous([this] {
-        selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, entries.size(), PAGE_ITEMS);
+        selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, totalRowCount(), PAGE_ITEMS);
         requestUpdate();
       });
       buttonNavigator.onPreviousContinuous([this] {
-        selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, entries.size(), PAGE_ITEMS);
+        selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, totalRowCount(), PAGE_ITEMS);
         requestUpdate();
       });
     }
@@ -157,26 +236,34 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
       GUI.drawProgressBar(renderer, Rect{50, pageHeight / 2 + 20, pageWidth - 100, 20}, downloadProgress,
                           downloadTotal);
     }
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
     return;
   }
 
-  const char* confirmLabel =
-      (!entries.empty() && entries[selectorIndex].type == OpdsEntryType::BOOK) ? tr(STR_DOWNLOAD) : tr(STR_OPEN);
+  const OpdsEntry* selectedEntry = entryForRow(selectorIndex);
+  const char* confirmLabel = tr(STR_OPEN);
+  if (selectedEntry && selectedEntry->type == OpdsEntryType::BOOK) {
+    confirmLabel = tr(STR_DOWNLOAD);
+  }
   const char* searchLabel = (!searchTemplate.empty() && selectorIndex == 0) ? tr(STR_SEARCH) : tr(STR_DIR_UP);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, searchLabel, tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (entries.empty()) {
+  const size_t rowCount = totalRowCount();
+  if (rowCount == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_NO_ENTRIES));
   } else {
     const auto pageStartIndex = selectorIndex / PAGE_ITEMS * PAGE_ITEMS;
     renderer.fillRect(0, 60 + (selectorIndex % PAGE_ITEMS) * 30 - 2, pageWidth - 1, 30);
 
-    for (size_t i = pageStartIndex; i < entries.size() && i < static_cast<size_t>(pageStartIndex + PAGE_ITEMS); i++) {
-      const auto& entry = entries[i];
-      std::string displayText = (entry.type == OpdsEntryType::NAVIGATION) ? "> " + entry.title : entry.title;
-      if (entry.type == OpdsEntryType::BOOK && !entry.author.empty()) displayText += " - " + entry.author;
+    for (size_t i = pageStartIndex; i < rowCount && i < static_cast<size_t>(pageStartIndex + PAGE_ITEMS); i++) {
+      std::string displayText;
+      if (const auto* entry = entryForRow(i)) {
+        displayText = (entry->type == OpdsEntryType::NAVIGATION) ? "> " + entry->title : entry->title;
+        if (entry->type == OpdsEntryType::BOOK && !entry->author.empty()) displayText += " - " + entry->author;
+      }
       auto item = renderer.truncatedText(UI_10_FONT_ID, displayText.c_str(), pageWidth - 40);
       renderer.drawText(UI_10_FONT_ID, 20, 60 + (i % PAGE_ITEMS) * 30, item.c_str(),
                         i != static_cast<size_t>(selectorIndex));
@@ -241,7 +328,7 @@ void OpdsBookBrowserActivity::navigateToEntry(const OpdsEntry& entry) {
   statusMessage = tr(STR_LOADING);
   entries.clear();
   selectorIndex = 0;
-  requestUpdate(true);
+  requestUpdateAndWait();
   fetchFeed(currentPath);
 }
 
@@ -255,8 +342,40 @@ void OpdsBookBrowserActivity::navigateBack() {
     statusMessage = tr(STR_LOADING);
     entries.clear();
     selectorIndex = 0;
-    requestUpdate();
+    requestUpdateAndWait();
     fetchFeed(currentPath);
+  }
+}
+
+size_t OpdsBookBrowserActivity::totalRowCount() const { return entries.size(); }
+
+const OpdsEntry* OpdsBookBrowserActivity::entryForRow(const size_t row) const {
+  return row < entries.size() ? &entries[row] : nullptr;
+}
+
+void OpdsBookBrowserActivity::resetDownloadProgressRender() {
+  lastProgressRenderBytes = 0;
+  lastProgressRenderMs = millis();
+}
+
+void OpdsBookBrowserActivity::updateDownloadProgress(const size_t downloaded, const size_t total) {
+  downloadProgress = downloaded;
+  downloadTotal = total;
+
+  mappedInput.update();
+  if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+      mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    cancelDownload = true;
+  }
+
+  const unsigned long now = millis();
+  const bool enoughTime = now - lastProgressRenderMs >= DOWNLOAD_PROGRESS_RENDER_INTERVAL_MS;
+  const bool enoughBytes = downloaded >= lastProgressRenderBytes + DOWNLOAD_PROGRESS_RENDER_BYTES;
+  const bool complete = total > 0 && downloaded >= total;
+  if (enoughTime || enoughBytes || complete) {
+    lastProgressRenderMs = now;
+    lastProgressRenderBytes = downloaded;
+    requestUpdate(true);
   }
 }
 
@@ -264,32 +383,43 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   state = BrowserState::DOWNLOADING;
   statusMessage = book.title;
   downloadProgress = downloadTotal = 0;
+  cancelDownload = false;
+  resetDownloadProgressRender();
   requestUpdate(true);
 
-  // Build full download URL relative to the current feed, not the root server URL
-  const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
-  std::string downloadUrl = UrlUtils::buildUrl(feedUrl, book.href);
-  std::string filename =
-      "/" + StringUtils::sanitizeFilename((book.author.empty() ? "" : book.author + " - ") + book.title) + ".epub";
-  LOG_DBG("OPDS", "Downloading: %s -> %s", downloadUrl.c_str(), filename.c_str());
-
-  const auto result = HttpDownloader::downloadToFile(
-      downloadUrl, filename,
-      [this](const size_t downloaded, const size_t total) {
-        downloadProgress = downloaded;
-        downloadTotal = total;
-        requestUpdate(true);
-      },
-      nullptr, server.username, server.password);
-
-  if (result == HttpDownloader::OK) {
-    clearBookCache(filename);
+  std::string filename = buildDownloadPath(server, book);
+  if (downloadBookToPath(book, filename)) {
     state = BrowserState::BROWSING;
+  } else if (cancelDownload) {
+    state = BrowserState::BROWSING;
+    consumeBack = true;
   } else {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_DOWNLOAD_FAILED);
   }
+  cancelDownload = false;
   requestUpdate();
+}
+
+bool OpdsBookBrowserActivity::downloadBookToPath(const OpdsEntry& book, const std::string& destPath) {
+  const std::string downloadUrl = downloadUrlForBook(book);
+  LOG_DBG("OPDS", "Downloading: %s -> %s", downloadUrl.c_str(), destPath.c_str());
+
+  const auto result = HttpDownloader::downloadToFile(
+      downloadUrl, destPath,
+      [this](const size_t downloaded, const size_t total) { updateDownloadProgress(downloaded, total); },
+      &cancelDownload, server.username, server.password);
+
+  if (result == HttpDownloader::OK) {
+    clearBookCache(destPath);
+    return true;
+  }
+  return false;
+}
+
+std::string OpdsBookBrowserActivity::downloadUrlForBook(const OpdsEntry& book) const {
+  const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
+  return UrlUtils::buildUrl(feedUrl, book.href);
 }
 
 void OpdsBookBrowserActivity::launchSearch() {

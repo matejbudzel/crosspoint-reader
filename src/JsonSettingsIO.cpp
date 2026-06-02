@@ -18,6 +18,25 @@
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
 
+namespace {
+const char* opdsSaveLayoutToString(const OpdsSaveLayout layout) {
+  switch (layout) {
+    case OpdsSaveLayout::ByAuthor:
+      return "by_author";
+    case OpdsSaveLayout::Flat:
+    default:
+      return "flat";
+  }
+}
+
+OpdsSaveLayout opdsSaveLayoutFromString(const char* value) {
+  if (value != nullptr && strcmp(value, "by_author") == 0) {
+    return OpdsSaveLayout::ByAuthor;
+  }
+  return OpdsSaveLayout::Flat;
+}
+}  // namespace
+
 // Convert legacy settings.
 void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
   switch (static_cast<CrossPointSettings::STATUS_BAR_MODE>(settings.statusBar)) {
@@ -375,6 +394,8 @@ bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
     obj["url"] = server.url;
     obj["username"] = server.username;
     obj["password_obf"] = obfuscation::obfuscateToBase64(server.password);
+    obj["downloadRoot"] = server.downloadRoot;
+    obj["saveLayout"] = opdsSaveLayoutToString(server.saveLayout);
   }
 
   String json;
@@ -399,6 +420,8 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
     server.name = obj["name"] | std::string("");
     server.url = obj["url"] | std::string("");
     server.username = obj["username"] | std::string("");
+    server.downloadRoot = obj["downloadRoot"] | std::string("");
+    server.saveLayout = opdsSaveLayoutFromString(obj["saveLayout"] | "flat");
     // Try the obfuscated key first; fall back to plaintext "password" for
     // files written before obfuscation was added (or hand-edited JSON).
     bool ok = false;

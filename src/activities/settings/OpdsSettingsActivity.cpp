@@ -13,9 +13,9 @@
 #include "fontIds.h"
 
 namespace {
-// Editable fields: Name, URL, Username, Password.
+// Editable fields: Name, URL, Username, Password, Download Folder, Save Layout.
 // Existing servers also show a Delete option (BASE_ITEMS + 1).
-constexpr int BASE_ITEMS = 4;
+constexpr int BASE_ITEMS = 6;
 }  // namespace
 
 int OpdsSettingsActivity::getMenuItemCount() const {
@@ -156,7 +156,27 @@ void OpdsSettingsActivity::handleSelection() {
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_PASSWORD),
                                                                    editServer.password, 63, InputType::Password),
                            handler);
-  } else if (selectedIndex == 4 && !isNewServer) {
+  } else if (selectedIndex == 4) {
+    // Download folder
+    const std::string prefillPath = editServer.downloadRoot.empty() ? "/" : editServer.downloadRoot;
+    auto handler = [this](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        editServer.downloadRoot = (kb.text == "/") ? "" : kb.text;
+        saveServer();
+        requestUpdate();
+      }
+    };
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_DOWNLOAD_FOLDER),
+                                                                   prefillPath, 63, InputType::Text),
+                           handler);
+  } else if (selectedIndex == 5) {
+    // Save layout
+    editServer.saveLayout =
+        editServer.saveLayout == OpdsSaveLayout::Flat ? OpdsSaveLayout::ByAuthor : OpdsSaveLayout::Flat;
+    saveServer();
+    requestUpdate();
+  } else if (selectedIndex == 6 && !isNewServer) {
     // Delete flow is only available for existing servers.
     if (!OPDS_STORE.removeServer(static_cast<size_t>(serverIndex))) {
       LOG_ERR("OPS", "Failed to remove OPDS server at index %d", serverIndex);
@@ -186,7 +206,7 @@ void OpdsSettingsActivity::render(RenderLock&&) {
   const int menuItems = getMenuItemCount();
 
   const StrId fieldNames[] = {StrId::STR_SERVER_NAME, StrId::STR_OPDS_SERVER_URL, StrId::STR_USERNAME,
-                              StrId::STR_PASSWORD};
+                              StrId::STR_PASSWORD,    StrId::STR_DOWNLOAD_FOLDER, StrId::STR_SAVE_LAYOUT};
 
   GUI.drawList(
       renderer, Rect{0, contentTop, pageWidth, contentHeight}, menuItems, static_cast<int>(selectedIndex),
@@ -206,6 +226,11 @@ void OpdsSettingsActivity::render(RenderLock&&) {
           return editServer.username.empty() ? std::string(tr(STR_NOT_SET)) : editServer.username;
         } else if (index == 3) {
           return editServer.password.empty() ? std::string(tr(STR_NOT_SET)) : std::string("******");
+        } else if (index == 4) {
+          return editServer.downloadRoot.empty() ? std::string("/") : editServer.downloadRoot;
+        } else if (index == 5) {
+          return editServer.saveLayout == OpdsSaveLayout::ByAuthor ? std::string(tr(STR_SAVE_LAYOUT_BY_AUTHOR))
+                                                                   : std::string(tr(STR_SAVE_LAYOUT_FLAT));
         }
         return std::string("");
       },
