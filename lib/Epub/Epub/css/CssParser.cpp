@@ -415,6 +415,18 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
       style.verticalAlign = CssVerticalAlign::Sub;
       style.defined.verticalAlign = 1;
     }
+  } else if (propNameBuf == "page-break-before" || propNameBuf == "break-before") {
+    const std::string_view breakValue = stripTrailingImportant(propValueBuf);
+    if (breakValue == "always" || breakValue == "page") {
+      style.pageBreakBefore = true;
+      style.defined.pageBreakBefore = 1;
+    }
+  } else if (propNameBuf == "page-break-after" || propNameBuf == "break-after") {
+    const std::string_view breakValue = stripTrailingImportant(propValueBuf);
+    if (breakValue == "always" || breakValue == "page") {
+      style.pageBreakAfter = true;
+      style.defined.pageBreakAfter = 1;
+    }
   }
 }
 
@@ -766,6 +778,8 @@ bool CssParser::saveToCache() const {
     if (style.defined.display) definedBits |= 1 << 15;
     if (style.defined.direction) definedBits |= 1 << 16;
     if (style.defined.verticalAlign) definedBits |= 1 << 17;
+    if (style.defined.pageBreakBefore) definedBits |= 1 << 18;
+    if (style.defined.pageBreakAfter) definedBits |= 1 << 19;
     file.write(reinterpret_cast<const uint8_t*>(&definedBits), sizeof(definedBits));
   }
 
@@ -945,6 +959,10 @@ bool CssParser::loadFromCache() {
     style.defined.display = (definedBits & 1 << 15) != 0;
     style.defined.direction = (definedBits & 1 << 16) != 0;
     style.defined.verticalAlign = (definedBits & 1 << 17) != 0;
+    style.defined.pageBreakBefore = (definedBits & 1 << 18) != 0;
+    style.defined.pageBreakAfter = (definedBits & 1 << 19) != 0;
+    style.pageBreakBefore = style.defined.pageBreakBefore;
+    style.pageBreakAfter = style.defined.pageBreakAfter;
 
     rulesBySelector_[selector] = style;
   }
