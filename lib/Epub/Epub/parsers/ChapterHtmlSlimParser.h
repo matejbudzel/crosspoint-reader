@@ -79,6 +79,7 @@ class ChapterHtmlSlimParser {
   int tableDepth = 0;
   int tableRowIndex = 0;
   int tableColIndex = 0;
+  std::vector<int> pageBreakAfterDepths;
 
   // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
   int completedPageCount = 0;
@@ -103,6 +104,7 @@ class ChapterHtmlSlimParser {
   void makePages();
   static void applyDirectionToEntry(StyleStackEntry& entry, const CssStyle& css);
   void emitHorizontalRule(const BlockStyle& blockStyle);
+  void forcePageBreak();
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);

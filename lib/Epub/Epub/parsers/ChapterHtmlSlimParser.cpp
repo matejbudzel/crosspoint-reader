@@ -293,6 +293,24 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
   }
 }
 
+void ChapterHtmlSlimParser::forcePageBreak() {
+  if (partWordBufferIndex > 0) {
+    flushPartWordBuffer();
+  }
+  if (currentTextBlock && !currentTextBlock->isEmpty()) {
+    makePages();
+  }
+  if (currentPage && !currentPage->elements.empty()) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
+    currentPage.reset();
+    currentPageNextY = 0;
+  } else if (currentPage) {
+    currentPageNextY = 0;
+  }
+  nextWordContinues = false;
+}
+
 void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
 
@@ -348,10 +366,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   CssStyle cssStyle;
   if (self->cssParser) {
     cssStyle = self->cssParser->resolveStyle(name, classAttr);
-    if (!styleAttr.empty()) {
-      CssStyle inlineStyle = CssParser::parseInlineStyle(styleAttr);
-      cssStyle.applyOver(inlineStyle);
-    }
+  }
+  if (!styleAttr.empty()) {
+    CssStyle inlineStyle = CssParser::parseInlineStyle(styleAttr);
+    cssStyle.applyOver(inlineStyle);
   }
 
   // HTML dir attribute overrides CSS direction (case-insensitive per HTML spec)
@@ -745,11 +763,19 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
-  // Skip blocks with role="doc-pagebreak" and epub:type="pagebreak"
+  if (cssStyle.hasPageBreakBefore() && cssStyle.pageBreakBefore) {
+    self->forcePageBreak();
+  }
+  if (cssStyle.hasPageBreakAfter() && cssStyle.pageBreakAfter) {
+    self->pageBreakAfterDepths.push_back(self->depth);
+  }
+
+  // Treat semantic page-break markers as a real page break, then skip their marker text.
   if (atts != nullptr) {
     for (int i = 0; atts[i]; i += 2) {
-      if (strcmp(atts[i], "role") == 0 && strcmp(atts[i + 1], "doc-pagebreak") == 0 ||
-          strcmp(atts[i], "epub:type") == 0 && strcmp(atts[i + 1], "pagebreak") == 0) {
+      if ((strcmp(atts[i], "role") == 0 && strcmp(atts[i + 1], "doc-pagebreak") == 0) ||
+          (strcmp(atts[i], "epub:type") == 0 && strcmp(atts[i + 1], "pagebreak") == 0)) {
+        self->forcePageBreak();
         self->skipUntilDepth = self->depth;
         self->depth += 1;
         return;
@@ -1310,6 +1336,11 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       self->blockStyleStack.pop_back();
     }
   }
+
+  if (!self->pageBreakAfterDepths.empty() && self->pageBreakAfterDepths.back() == self->depth) {
+    self->pageBreakAfterDepths.pop_back();
+    self->forcePageBreak();
+  }
 }
 
 bool ChapterHtmlSlimParser::parseAndBuildPages() {
@@ -1323,6 +1354,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   blockStyleStack.clear();
   blockStyleStack.reserve(8);
   blockStyleStack.push_back(rootBlockStyle);
+  pageBreakAfterDepths.clear();
 
   auto paragraphAlignmentBlockStyle = BlockStyle();
   paragraphAlignmentBlockStyle.textAlignDefined = true;
@@ -1392,15 +1424,19 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   destroyXmlParser(parser);
   file.close();
 
-  // Process last page if there is still text
+  // Process last page if there is still text or non-text content.
   if (currentTextBlock) {
-    makePages();
+    if (!currentTextBlock->isEmpty()) {
+      makePages();
+    }
     if (!pendingAnchorId.empty()) {
       anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
       pendingAnchorId.clear();
     }
-    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
-    completedPageCount++;
+    if (currentPage && !currentPage->elements.empty()) {
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+      completedPageCount++;
+    }
     currentPage.reset();
     currentTextBlock.reset();
   }
@@ -1441,6 +1477,9 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
 void ChapterHtmlSlimParser::makePages() {
   if (!currentTextBlock) {
     LOG_ERR("EHP", "!! No text block to make pages for !!");
+    return;
+  }
+  if (currentTextBlock->isEmpty()) {
     return;
   }
 

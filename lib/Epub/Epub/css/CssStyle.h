@@ -94,6 +94,8 @@ struct CssPropertyFlags {
   uint16_t display : 1;
   uint16_t direction : 1;
   uint16_t verticalAlign : 1;
+  uint16_t pageBreakBefore : 1;
+  uint16_t pageBreakAfter : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -113,23 +115,25 @@ struct CssPropertyFlags {
         imageWidth(0),
         display(0),
         direction(0),
-        verticalAlign(0) {}
+        verticalAlign(0),
+        pageBreakBefore(0),
+        pageBreakAfter(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || direction || verticalAlign;
+           imageWidth || display || direction || verticalAlign || pageBreakBefore || pageBreakAfter;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = direction = verticalAlign = 0;
+    imageHeight = imageWidth = display = direction = verticalAlign = pageBreakBefore = pageBreakAfter = 0;
   }
 };
 
-// Cache serializes defined flags as uint32_t with bit indices 0..17.
+// Cache serializes defined flags as uint32_t with bit indices 0..19.
 static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
               "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
 
@@ -156,6 +160,8 @@ struct CssStyle {
   CssLength imageWidth;     // Width for img when both or only width set
   CssDisplay display = CssDisplay::Block;                       // display property (Block or None)
   CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
+  bool pageBreakBefore = false;
+  bool pageBreakAfter = false;
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -234,6 +240,14 @@ struct CssStyle {
       verticalAlign = base.verticalAlign;
       defined.verticalAlign = 1;
     }
+    if (base.hasPageBreakBefore()) {
+      pageBreakBefore = base.pageBreakBefore;
+      defined.pageBreakBefore = 1;
+    }
+    if (base.hasPageBreakAfter()) {
+      pageBreakAfter = base.pageBreakAfter;
+      defined.pageBreakAfter = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -254,6 +268,8 @@ struct CssStyle {
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
+  [[nodiscard]] bool hasPageBreakBefore() const { return defined.pageBreakBefore; }
+  [[nodiscard]] bool hasPageBreakAfter() const { return defined.pageBreakAfter; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -267,6 +283,8 @@ struct CssStyle {
     imageHeight = imageWidth = CssLength{};
     display = CssDisplay::Block;
     verticalAlign = CssVerticalAlign::Baseline;
+    pageBreakBefore = false;
+    pageBreakAfter = false;
     defined.clearAll();
   }
 };
