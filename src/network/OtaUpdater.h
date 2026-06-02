@@ -3,12 +3,23 @@
 #include <string>
 
 class OtaUpdater {
+ public:
+  enum class Phase {
+    Idle,
+    Downloading,
+    Validating,
+    Updating,
+  };
+
+ private:
   bool updateAvailable = false;
   std::string latestVersion;
   std::string otaUrl;
   size_t otaSize = 0;
   size_t processedSize = 0;
   size_t totalSize = 0;
+  bool directUrlMode = false;
+  Phase phase = Phase::Idle;
 
  public:
   using ProgressCallback = void (*)(void* ctx);
@@ -29,9 +40,12 @@ class OtaUpdater {
 
   size_t getTotalSize() const { return totalSize; }
 
+  Phase getPhase() const { return phase; }
+
   OtaUpdater() = default;
   bool isUpdateNewer() const;
   const std::string& getLatestVersion() const;
+  void useDirectUrl(const std::string& url, const std::string& name);
   OtaUpdaterError checkForUpdate();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
 };
