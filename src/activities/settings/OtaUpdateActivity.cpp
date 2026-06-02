@@ -26,6 +26,16 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdateAndWait();
 
+  if (directSource) {
+    LOG_DBG("OTA", "Using direct OTA URL: %s", source.url.c_str());
+    updater.useDirectUrl(source.url, source.name);
+    {
+      RenderLock lock(*this);
+      state = WAITING_CONFIRMATION;
+    }
+    return;
+  }
+
   const auto res = updater.checkForUpdate();
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update check failed: %d", res);
@@ -92,12 +102,14 @@ void OtaUpdateActivity::render(RenderLock&&) {
   float updaterProgress = 0;
   if (state == UPDATE_IN_PROGRESS) {
     LOG_DBG("OTA", "Update progress: %d / %d", updater.getProcessedSize(), updater.getTotalSize());
-    updaterProgress = static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize());
-    // Only update every 2% at the most
-    if (static_cast<int>(updaterProgress * 50) == lastUpdaterPercentage / 2) {
-      return;
+    if (updater.getPhase() != OtaUpdater::Phase::Validating && updater.getTotalSize() > 0) {
+      updaterProgress = static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize());
+      // Only update every 2% at the most when we have a known total size.
+      if (static_cast<int>(updaterProgress * 50) == lastUpdaterPercentage / 2) {
+        return;
+      }
+      lastUpdaterPercentage = static_cast<int>(updaterProgress * 100);
     }
-    lastUpdaterPercentage = static_cast<int>(updaterProgress * 100);
   }
 
   if (state == CHECKING_FOR_UPDATE) {
@@ -112,21 +124,21 @@ void OtaUpdateActivity::render(RenderLock&&) {
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_UPDATE), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == UPDATE_IN_PROGRESS) {
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING));
+    const char* label = tr(STR_UPDATING);
+    if (updater.getPhase() == OtaUpdater::Phase::Downloading) {
+      label = tr(STR_DOWNLOADING);
+    } else if (updater.getPhase() == OtaUpdater::Phase::Validating) {
+      label = tr(STR_VALIDATING_FIRMWARE);
+    }
+    renderer.drawCenteredText(UI_10_FONT_ID, top, label);
 
     int y = top + height + metrics.verticalSpacing;
-    GUI.drawProgressBar(
-        renderer,
-        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        static_cast<int>(updaterProgress * 100), 100);
-
-    y += metrics.progressBarHeight + metrics.verticalSpacing;
-    // Percent label is drawn by BaseTheme::drawProgressBar; this slot is left intentionally empty
-    // so the bytes line below stays at the same Y it was at when the activity drew its own percent.
-    y += height + metrics.verticalSpacing;
-    renderer.drawCenteredText(
-        UI_10_FONT_ID, y,
-        (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
+    if (updater.getPhase() != OtaUpdater::Phase::Validating) {
+      GUI.drawProgressBar(
+          renderer,
+          Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+          static_cast<int>(updaterProgress * 100), 100);
+    }
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
@@ -137,7 +149,7 @@ void OtaUpdateActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == FINISHED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, tr(STR_POWER_ON_HINT));
+    renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, tr(STR_RESTARTING_HINT));
   }
 
   renderer.displayBuffer();

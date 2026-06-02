@@ -7,11 +7,13 @@
 
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include "BookmarkEntry.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
+#include "OtaSourceStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
@@ -409,6 +411,47 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
   }
 
   LOG_DBG("OPS", "Loaded %zu OPDS servers from file", store.servers.size());
+  return true;
+}
+
+// ---- OtaSourceStore ----
+
+bool JsonSettingsIO::saveOtaSources(const OtaSourceStore& store, const char* path) {
+  JsonDocument doc;
+
+  JsonArray arr = doc["sources"].to<JsonArray>();
+  for (const auto& source : store.getSources()) {
+    JsonObject obj = arr.add<JsonObject>();
+    obj["name"] = source.name;
+    obj["url"] = source.url;
+  }
+
+  String json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json);
+}
+
+bool JsonSettingsIO::loadOtaSources(OtaSourceStore& store, const char* json) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, json);
+  if (error) {
+    LOG_ERR("OTA", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+
+  store.sources.clear();
+  JsonArray arr = doc["sources"].as<JsonArray>();
+  for (JsonObject obj : arr) {
+    if (store.sources.size() >= OtaSourceStore::MAX_SOURCES) break;
+    OtaSource source;
+    source.name = obj["name"] | std::string("");
+    source.url = obj["url"] | std::string("");
+    if (!source.url.empty()) {
+      store.sources.push_back(std::move(source));
+    }
+  }
+
+  LOG_DBG("OTA", "Loaded %zu OTA sources from file", store.sources.size());
   return true;
 }
 

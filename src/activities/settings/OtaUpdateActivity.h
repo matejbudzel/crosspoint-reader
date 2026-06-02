@@ -1,5 +1,8 @@
 #pragma once
 
+#include <utility>
+
+#include "OtaSourceStore.h"
 #include "activities/Activity.h"
 #include "network/OtaUpdater.h"
 
@@ -21,12 +24,16 @@ class OtaUpdateActivity : public Activity {
   State state = WIFI_SELECTION;
   unsigned int lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
   OtaUpdater updater;
+  bool directSource = false;
+  OtaSource source;
 
   void onWifiSelectionComplete(bool success);
 
  public:
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("OtaUpdate", renderer, mappedInput), updater() {}
+  OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, OtaSource source)
+      : Activity("OtaUpdate", renderer, mappedInput), updater(), directSource(true), source(std::move(source)) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

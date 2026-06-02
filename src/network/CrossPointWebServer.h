@@ -135,6 +135,11 @@ class CrossPointWebServer {
   void handlePostOpdsServer();
   void handleDeleteOpdsServer();
 
+  // OTA source handlers
+  void handleGetOtaSources() const;
+  void handlePostOtaSource();
+  void handleDeleteOtaSource();
+
   // Wi-Fi credential handlers
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();

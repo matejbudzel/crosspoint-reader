@@ -13,6 +13,7 @@
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
 #include "OpdsServerStore.h"
+#include "OtaSourceStore.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
@@ -169,6 +170,11 @@ void CrossPointWebServer::begin() {
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
   server->on("/api/opds", HTTP_POST, [this] { handlePostOpdsServer(); });
   server->on("/api/opds/delete", HTTP_POST, [this] { handleDeleteOpdsServer(); });
+
+  // OTA source endpoints
+  server->on("/api/ota-sources", HTTP_GET, [this] { handleGetOtaSources(); });
+  server->on("/api/ota-sources", HTTP_POST, [this] { handlePostOtaSource(); });
+  server->on("/api/ota-sources/delete", HTTP_POST, [this] { handleDeleteOtaSource(); });
 
   // Wi-Fi credential endpoints
   server->on("/api/wifi", HTTP_GET, [this] { handleGetWifiNetworks(); });
@@ -1384,6 +1390,110 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
 
   OPDS_STORE.removeServer(static_cast<size_t>(idx));
   LOG_DBG("WEB", "Deleted OPDS server at index %d", idx);
+  server->send(200, "text/plain", "OK");
+}
+
+// ---- OTA Sources API ----
+
+void CrossPointWebServer::handleGetOtaSources() const {
+  const auto& sources = OTA_SOURCE_STORE.getSources();
+
+  // Stream JSON array incrementally to avoid allocating the full response in memory
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  server->sendContent("[");
+
+  char output[384];
+  constexpr size_t outputSize = sizeof(output);
+  JsonDocument doc;
+
+  for (size_t i = 0; i < sources.size(); i++) {
+    doc.clear();
+    doc["index"] = i;
+    doc["name"] = sources[i].name;
+    doc["url"] = sources[i].url;
+
+    const size_t written = serializeJson(doc, output, outputSize);
+    if (written >= outputSize) continue;
+
+    if (i > 0) server->sendContent(",");
+    server->sendContent(output);
+  }
+
+  server->sendContent("]");
+  server->sendContent("");
+  LOG_DBG("WEB", "Served OTA sources API (%zu source(s))", sources.size());
+}
+
+void CrossPointWebServer::handlePostOtaSource() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing JSON body");
+    return;
+  }
+
+  const String body = server->arg("plain");
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    server->send(400, "text/plain", String("Invalid JSON: ") + err.c_str());
+    return;
+  }
+
+  OtaSource otaSource;
+  otaSource.name = doc["name"] | std::string("");
+  otaSource.url = doc["url"] | std::string("");
+
+  if (doc["index"].is<int>()) {
+    int idx = doc["index"].as<int>();
+    if (idx < 0 || idx >= static_cast<int>(OTA_SOURCE_STORE.getCount())) {
+      server->send(400, "text/plain", "Invalid OTA source index");
+      return;
+    }
+
+    if (!OTA_SOURCE_STORE.updateSource(static_cast<size_t>(idx), otaSource)) {
+      server->send(400, "text/plain", "Failed to update OTA source");
+      return;
+    }
+    LOG_DBG("WEB", "Updated OTA source at index %d", idx);
+  } else {
+    if (!OTA_SOURCE_STORE.addSource(otaSource)) {
+      server->send(400, "text/plain", "Cannot add OTA source (limit reached)");
+      return;
+    }
+    LOG_DBG("WEB", "Added new OTA source: %s", otaSource.name.c_str());
+  }
+
+  server->send(200, "text/plain", "OK");
+}
+
+// Uses POST (not HTTP DELETE) because ESP32 WebServer doesn't support DELETE with body.
+void CrossPointWebServer::handleDeleteOtaSource() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing JSON body");
+    return;
+  }
+
+  const String body = server->arg("plain");
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    server->send(400, "text/plain", String("Invalid JSON: ") + err.c_str());
+    return;
+  }
+
+  if (!doc["index"].is<int>()) {
+    server->send(400, "text/plain", "Missing index");
+    return;
+  }
+
+  int idx = doc["index"].as<int>();
+  if (idx < 0 || idx >= static_cast<int>(OTA_SOURCE_STORE.getCount())) {
+    server->send(400, "text/plain", "Invalid OTA source index");
+    return;
+  }
+
+  OTA_SOURCE_STORE.removeSource(static_cast<size_t>(idx));
+  LOG_DBG("WEB", "Deleted OTA source at index %d", idx);
   server->send(200, "text/plain", "OK");
 }
 

@@ -6,11 +6,14 @@
 // order; clang-format would otherwise sort the local header last and break the
 // build.
 #include "HttpDownloader.h"
+#include "FirmwareFlasher.h"
+#include <HalStorage.h>
 #include <Logging.h>
 #include <ReleaseJsonParser.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 #include <esp_https_ota.h>
+#include <esp_ota_ops.h>
 #include <esp_wifi.h>
 // clang-format on
 
@@ -18,14 +21,23 @@
 
 namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char OTA_TMP_DIR[] = "/.crosspoint/tmp/ota";
+constexpr char OTA_TMP_BIN[] = "/.crosspoint/tmp/ota/firmware.bin";
 
 esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
   return esp_http_client_set_header(http_client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 }
+
+struct DirectFlashProgress {
+  OtaUpdater* updater;
+  OtaUpdater::ProgressCallback callback;
+  void* callbackCtx;
+};
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+  directUrlMode = false;
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
@@ -111,9 +123,105 @@ bool OtaUpdater::isUpdateNewer() const {
 
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
 
+void OtaUpdater::useDirectUrl(const std::string& url, const std::string& name) {
+  directUrlMode = true;
+  updateAvailable = true;
+  otaUrl = url;
+  latestVersion = name.empty() ? url : name;
+  otaSize = 0;
+  processedSize = 0;
+  totalSize = 0;
+  phase = Phase::Idle;
+}
+
 OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
-  if (!isUpdateNewer()) {
+  if (!directUrlMode && !isUpdateNewer()) {
     return UPDATE_OLDER_ERROR;
+  }
+
+  if (directUrlMode) {
+    Storage.mkdir("/.crosspoint");
+    Storage.mkdir("/.crosspoint/tmp");
+    if (Storage.exists(OTA_TMP_DIR)) {
+      Storage.removeDir(OTA_TMP_DIR);
+    }
+    Storage.mkdir(OTA_TMP_DIR);
+
+    processedSize = 0;
+    totalSize = 0;
+    phase = Phase::Downloading;
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    const auto downloadResult = HttpDownloader::downloadToFile(
+        otaUrl, OTA_TMP_BIN,
+        [this, onProgress, ctx](const size_t downloaded, const size_t total) {
+          processedSize = downloaded;
+          totalSize = total;
+          if (onProgress) {
+            onProgress(ctx);
+          }
+        },
+        nullptr);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
+    if (downloadResult != HttpDownloader::OK) {
+      Storage.remove(OTA_TMP_BIN);
+      Storage.removeDir(OTA_TMP_DIR);
+      return HTTP_ERROR;
+    }
+
+    const esp_partition_t* dest = esp_ota_get_next_update_partition(nullptr);
+    if (!dest) {
+      Storage.remove(OTA_TMP_BIN);
+      Storage.removeDir(OTA_TMP_DIR);
+      return INTERNAL_UPDATE_ERROR;
+    }
+
+    phase = Phase::Validating;
+    if (onProgress) {
+      onProgress(ctx);
+    }
+    const auto validationResult = firmware_flash::validateImageFile(OTA_TMP_BIN, dest->size);
+    if (validationResult != firmware_flash::Result::OK) {
+      LOG_ERR("OTA", "staged firmware validation failed: %s", firmware_flash::resultName(validationResult));
+      Storage.remove(OTA_TMP_BIN);
+      Storage.removeDir(OTA_TMP_DIR);
+      return validationResult == firmware_flash::Result::OOM ? OOM_ERROR : INTERNAL_UPDATE_ERROR;
+    }
+
+    processedSize = 0;
+    {
+      HalFile staged;
+      if (Storage.openFileForRead("OTA", OTA_TMP_BIN, staged) && staged) {
+        totalSize = staged.fileSize();
+        staged.close();
+      }
+    }
+    phase = Phase::Updating;
+    if (onProgress) {
+      onProgress(ctx);
+    }
+    DirectFlashProgress progress{this, onProgress, ctx};
+    const auto flashResult = firmware_flash::flashFromSdPath(
+        OTA_TMP_BIN,
+        [](const size_t written, const size_t total, void* cbCtx) {
+          auto* progress = static_cast<DirectFlashProgress*>(cbCtx);
+          progress->updater->processedSize = written;
+          progress->updater->totalSize = total;
+          if (progress->callback) {
+            progress->callback(progress->callbackCtx);
+          }
+        },
+        &progress, true);
+    Storage.remove(OTA_TMP_BIN);
+    Storage.removeDir(OTA_TMP_DIR);
+
+    if (flashResult != firmware_flash::Result::OK) {
+      LOG_ERR("OTA", "staged firmware flash failed: %s", firmware_flash::resultName(flashResult));
+      return flashResult == firmware_flash::Result::OOM ? OOM_ERROR : INTERNAL_UPDATE_ERROR;
+    }
+
+    LOG_INF("OTA", "Direct URL staged update completed");
+    return OK;
   }
 
   esp_https_ota_handle_t ota_handle = NULL;
@@ -139,6 +247,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
   /* For better timing and connectivity, we disable power saving for WiFi */
   esp_wifi_set_ps(WIFI_PS_NONE);
+  phase = Phase::Updating;
 
   esp_err = esp_https_ota_begin(&ota_config, &ota_handle);
   if (esp_err != ESP_OK) {
@@ -160,6 +269,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
         lastReportedPct = pct;
         onProgress(ctx);
       }
+    } else if (onProgress) {
+      onProgress(ctx);
     }
     delay(100);  // TODO: should we replace this with something better?
   } while (esp_err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
