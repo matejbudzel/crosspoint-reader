@@ -13,10 +13,30 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
+#include "OpdsSyncSelectionStore.h"
 #include "OtaSourceStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
+
+namespace {
+const char* opdsSaveLayoutToString(const OpdsSaveLayout layout) {
+  switch (layout) {
+    case OpdsSaveLayout::ByAuthor:
+      return "by_author";
+    case OpdsSaveLayout::Flat:
+    default:
+      return "flat";
+  }
+}
+
+OpdsSaveLayout opdsSaveLayoutFromString(const char* value) {
+  if (value != nullptr && strcmp(value, "by_author") == 0) {
+    return OpdsSaveLayout::ByAuthor;
+  }
+  return OpdsSaveLayout::Flat;
+}
+}  // namespace
 
 // Convert legacy settings.
 void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
@@ -384,6 +404,8 @@ bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
     obj["url"] = server.url;
     obj["username"] = server.username;
     obj["password_obf"] = obfuscation::obfuscateToBase64(server.password);
+    obj["downloadRoot"] = server.downloadRoot;
+    obj["saveLayout"] = opdsSaveLayoutToString(server.saveLayout);
   }
 
   String json;
@@ -408,6 +430,8 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
     server.name = obj["name"] | std::string("");
     server.url = obj["url"] | std::string("");
     server.username = obj["username"] | std::string("");
+    server.downloadRoot = obj["downloadRoot"] | std::string("");
+    server.saveLayout = opdsSaveLayoutFromString(obj["saveLayout"] | "flat");
     // Try the obfuscated key first; fall back to plaintext "password" for
     // files written before obfuscation was added (or hand-edited JSON).
     bool ok = false;
@@ -461,6 +485,66 @@ bool JsonSettingsIO::loadOtaSources(OtaSourceStore& store, const char* json) {
   }
 
   LOG_DBG("OTA", "Loaded %zu OTA sources from file", store.sources.size());
+  return true;
+}
+
+// ---- OpdsSyncSelectionStore ----
+
+bool JsonSettingsIO::saveOpdsSyncSelections(const OpdsSyncSelectionStore& store, const char* path) {
+  JsonDocument doc;
+
+  doc["version"] = 1;
+  JsonArray arr = doc["selections"].to<JsonArray>();
+  for (const auto& selection : store.getSelections()) {
+    JsonObject obj = arr.add<JsonObject>();
+    obj["serverKey"] = selection.serverKey;
+    obj["href"] = selection.href;
+    obj["title"] = selection.title;
+    obj["author"] = selection.author;
+    if (!selection.syncedUpdated.empty()) {
+      obj["syncedUpdated"] = selection.syncedUpdated;
+    }
+    if (!selection.syncedTargetPath.empty()) {
+      obj["syncedTargetPath"] = selection.syncedTargetPath;
+    }
+    if (selection.hasSyncedSize) {
+      obj["syncedSize"] = selection.syncedSize;
+    }
+  }
+
+  String json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json);
+}
+
+bool JsonSettingsIO::loadOpdsSyncSelections(OpdsSyncSelectionStore& store, const char* json) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, json);
+  if (error) {
+    LOG_ERR("OSS", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+
+  store.selections.clear();
+  JsonArray arr = doc["selections"].as<JsonArray>();
+  for (JsonObject obj : arr) {
+    OpdsSyncSelection selection;
+    selection.serverKey = obj["serverKey"] | std::string("");
+    selection.href = obj["href"] | std::string("");
+    selection.title = obj["title"] | std::string("");
+    selection.author = obj["author"] | std::string("");
+    selection.syncedUpdated = obj["syncedUpdated"] | std::string("");
+    selection.syncedTargetPath = obj["syncedTargetPath"] | std::string("");
+    if (!obj["syncedSize"].isNull()) {
+      selection.syncedSize = obj["syncedSize"] | static_cast<size_t>(0);
+      selection.hasSyncedSize = true;
+    }
+    if (!selection.serverKey.empty() && !selection.href.empty()) {
+      store.selections.push_back(std::move(selection));
+    }
+  }
+
+  LOG_DBG("OSS", "Loaded %zu OPDS sync selections from file", store.selections.size());
   return true;
 }
 

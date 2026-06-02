@@ -1,12 +1,20 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
+
+enum class OpdsSaveLayout : uint8_t {
+  Flat = 0,
+  ByAuthor = 1,
+};
 
 struct OpdsServer {
   std::string name;
   std::string url;
   std::string username;
   std::string password;  // Plaintext in memory; obfuscated with hardware key on disk
+  std::string downloadRoot;
+  OpdsSaveLayout saveLayout = OpdsSaveLayout::Flat;
 };
 
 class OpdsServerStore;

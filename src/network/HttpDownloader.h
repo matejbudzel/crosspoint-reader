@@ -23,6 +23,13 @@ class HttpDownloader {
     ABORTED,
   };
 
+  struct ProbeResult {
+    DownloadError result = HTTP_ERROR;
+    int httpStatus = 0;
+    bool hasContentLength = false;
+    size_t contentLength = 0;
+  };
+
   /**
    * Fetch text content from a URL with optional credentials.
    */
@@ -44,4 +51,11 @@ class HttpDownloader {
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "");
+
+  /**
+   * Probe response headers without downloading the body. Servers may reject
+   * HEAD or omit Content-Length; that is reported as hasContentLength=false.
+   */
+  static ProbeResult probeContentLength(const std::string& url, const std::string& username = "",
+                                        const std::string& password = "");
 };
