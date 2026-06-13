@@ -4,8 +4,77 @@
 #include <XmlParserUtils.h>
 
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <utility>
+
+namespace {
+
+bool asciiEqualsIgnoreCase(const char* left, const char* right) {
+  if (!left || !right) return false;
+  while (*left && *right) {
+    if (std::tolower(static_cast<unsigned char>(*left)) != std::tolower(static_cast<unsigned char>(*right))) {
+      return false;
+    }
+    left++;
+    right++;
+  }
+  return *left == '\0' && *right == '\0';
+}
+
+bool hasSuffixIgnoreCase(const char* value, const char* suffix) {
+  if (!value || !suffix) return false;
+  const size_t valueLen = strlen(value);
+  const size_t suffixLen = strlen(suffix);
+  if (valueLen < suffixLen) return false;
+  return asciiEqualsIgnoreCase(value + valueLen - suffixLen, suffix);
+}
+
+bool mediaTypeEquals(const char* value, const char* mediaType) {
+  if (!value || !mediaType) return false;
+  while (*value == ' ' || *value == '\t') value++;
+
+  const size_t mediaTypeLen = strlen(mediaType);
+  for (size_t i = 0; i < mediaTypeLen; i++) {
+    if (std::tolower(static_cast<unsigned char>(value[i])) !=
+        std::tolower(static_cast<unsigned char>(mediaType[i]))) {
+      return false;
+    }
+  }
+
+  const char next = value[mediaTypeLen];
+  return next == '\0' || next == ';' || next == ' ' || next == '\t';
+}
+
+const char* acquisitionExtensionFor(const char* type, const char* href) {
+  if (type) {
+    if (mediaTypeEquals(type, "application/epub+zip")) return ".epub";
+    if (mediaTypeEquals(type, "application/x-xteink-xtc") ||
+        mediaTypeEquals(type, "application/x-crosspoint-xtc")) {
+      return ".xtc";
+    }
+    if (mediaTypeEquals(type, "application/x-xteink-xtch") ||
+        mediaTypeEquals(type, "application/x-crosspoint-xtch")) {
+      return ".xtch";
+    }
+  }
+
+  if (type && !mediaTypeEquals(type, "application/octet-stream")) {
+    return nullptr;
+  }
+  if (hasSuffixIgnoreCase(href, ".epub")) return ".epub";
+  if (hasSuffixIgnoreCase(href, ".xtc")) return ".xtc";
+  if (hasSuffixIgnoreCase(href, ".xtch")) return ".xtch";
+  return nullptr;
+}
+
+int acquisitionPriority(const char* extension) {
+  if (asciiEqualsIgnoreCase(extension, ".xtc") || asciiEqualsIgnoreCase(extension, ".xtch")) return 3;
+  if (asciiEqualsIgnoreCase(extension, ".epub")) return 2;
+  return 0;
+}
+
+}  // namespace
 
 OpdsParser::OpdsParser() {
   parser = XML_ParserCreate(nullptr);
@@ -116,17 +185,16 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
       }
 
       if (self->inEntry) {
-        if (rel && type && strstr(rel, "opds-spec.org/acquisition") != nullptr &&
-            strcmp(type, "application/epub+zip") == 0) {
-          // Prefer plain EPUB links over derived formats when multiple
-          // acquisition links are present for one entry.
-          const bool isPlainEpub = strstr(href, ".epub") != nullptr || strstr(href, "/epub/") != nullptr;
-          const bool alreadyHasPlainEpub = self->currentEntry.type == OpdsEntryType::BOOK &&
-                                           (self->currentEntry.href.find(".epub") != std::string::npos ||
-                                            self->currentEntry.href.find("/epub/") != std::string::npos);
-          if (self->currentEntry.type != OpdsEntryType::BOOK || (isPlainEpub && !alreadyHasPlainEpub)) {
+        const char* acquisitionExtension = acquisitionExtensionFor(type, href);
+        if (rel && strstr(rel, "opds-spec.org/acquisition") != nullptr && acquisitionExtension) {
+          // Prefer pre-rendered XTC/XTCH links over EPUB when a feed exposes
+          // multiple acquisition formats for one entry.
+          const int newPriority = acquisitionPriority(acquisitionExtension);
+          const int currentPriority = acquisitionPriority(self->currentEntry.fileExtension.c_str());
+          if (self->currentEntry.type != OpdsEntryType::BOOK || newPriority > currentPriority) {
             self->currentEntry.type = OpdsEntryType::BOOK;
             self->currentEntry.href = href;
+            self->currentEntry.fileExtension = acquisitionExtension;
             const char* length = findAttribute(atts, "length");
             if (length) {
               char* end = nullptr;

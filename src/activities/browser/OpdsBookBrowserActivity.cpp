@@ -59,9 +59,17 @@ std::string joinPath(const std::string& dir, const std::string& filename) {
   return dir + "/" + filename;
 }
 
+std::string bookFileExtension(const OpdsEntry& book) {
+  if (book.fileExtension == ".epub" || book.fileExtension == ".xtc" || book.fileExtension == ".xtch") {
+    return book.fileExtension;
+  }
+  return ".epub";
+}
+
 std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
   const std::string root = normalizeDownloadRoot(server.downloadRoot);
   std::string title = StringUtils::sanitizeFilename(book.title);
+  const std::string extension = bookFileExtension(book);
   if (title.empty()) {
     title = "untitled";
   }
@@ -75,7 +83,7 @@ std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
     if (!Storage.exists(dir.c_str())) {
       Storage.mkdir(dir.c_str());
     }
-    return joinPath(dir, title + ".epub");
+    return joinPath(dir, title + extension);
   }
 
   if (!Storage.exists(root.c_str())) {
@@ -84,7 +92,7 @@ std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
 
   const std::string basename =
       book.author.empty() ? title : StringUtils::sanitizeFilename(book.author + " - " + book.title);
-  return joinPath(root, basename + ".epub");
+  return joinPath(root, basename + extension);
 }
 
 }  // namespace
