@@ -415,15 +415,15 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
       style.verticalAlign = CssVerticalAlign::Sub;
       style.defined.verticalAlign = 1;
     }
-  } else if (propNameBuf == "page-break-before" || propNameBuf == "break-before") {
-    const std::string_view breakValue = stripTrailingImportant(propValueBuf);
-    if (breakValue == "always" || breakValue == "page") {
+  } else if (iequalsAscii(name, "page-break-before") || iequalsAscii(name, "break-before")) {
+    const std::string_view breakValue = stripTrailingImportant(value);
+    if (iequalsAscii(breakValue, "always") || iequalsAscii(breakValue, "page")) {
       style.pageBreakBefore = true;
       style.defined.pageBreakBefore = 1;
     }
-  } else if (propNameBuf == "page-break-after" || propNameBuf == "break-after") {
-    const std::string_view breakValue = stripTrailingImportant(propValueBuf);
-    if (breakValue == "always" || breakValue == "page") {
+  } else if (iequalsAscii(name, "page-break-after") || iequalsAscii(name, "break-after")) {
+    const std::string_view breakValue = stripTrailingImportant(value);
+    if (iequalsAscii(breakValue, "always") || iequalsAscii(breakValue, "page")) {
       style.pageBreakAfter = true;
       style.defined.pageBreakAfter = 1;
     }

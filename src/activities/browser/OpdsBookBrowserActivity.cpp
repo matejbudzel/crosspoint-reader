@@ -95,9 +95,17 @@ std::string buildServerKey(const OpdsServer& server) {
   return fnv1aHex(stable);
 }
 
+std::string bookFileExtension(const OpdsEntry& book) {
+  if (book.fileExtension == ".epub" || book.fileExtension == ".xtc" || book.fileExtension == ".xtch") {
+    return book.fileExtension;
+  }
+  return ".epub";
+}
+
 std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
   const std::string root = normalizeDownloadRoot(server.downloadRoot);
   std::string title = StringUtils::sanitizeFilename(book.title);
+  const std::string extension = bookFileExtension(book);
   if (title.empty()) {
     title = "untitled";
   }
@@ -111,7 +119,7 @@ std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
     if (!Storage.exists(dir.c_str())) {
       Storage.mkdir(dir.c_str());
     }
-    return joinPath(dir, title + ".epub");
+    return joinPath(dir, title + extension);
   }
 
   if (!Storage.exists(root.c_str())) {
@@ -120,7 +128,7 @@ std::string buildDownloadPath(const OpdsServer& server, const OpdsEntry& book) {
 
   const std::string basename =
       book.author.empty() ? title : StringUtils::sanitizeFilename(book.author + " - " + book.title);
-  return joinPath(root, basename + ".epub");
+  return joinPath(root, basename + extension);
 }
 
 bool filesEqual(const std::string& leftPath, const std::string& rightPath) {
@@ -887,7 +895,7 @@ void OpdsBookBrowserActivity::syncSelectedBooks() {
     requestUpdate(true);
 
     const std::string downloadUrl = downloadUrlForBook(*book);
-    const std::string tmpPath = joinPath(OPDS_SYNC_TMP_DIR, fnv1aHex(downloadUrl) + ".epub.tmp");
+    const std::string tmpPath = joinPath(OPDS_SYNC_TMP_DIR, fnv1aHex(downloadUrl) + bookFileExtension(*book) + ".tmp");
     const std::string targetPath = buildDownloadPath(server, *book);
     logSync("item %zu/%zu title='%s' target='%s'", syncCurrent, syncTotal, book->title.c_str(), targetPath.c_str());
     if (isAlreadySynced(*book, targetPath)) {
