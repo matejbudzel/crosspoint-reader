@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstring>
+#include <utility>
 
 namespace {
 
@@ -80,7 +81,12 @@ OpdsParser::OpdsParser() {
   if (!parser) {
     errorOccured = true;
     LOG_DBG("OPDS", "Couldn't allocate memory for parser");
+    return;
   }
+  // Allocate the common catalog size before HTTPS/TLS setup consumes much of
+  // the heap. Further vector growth moves existing entries without copying
+  // their string buffers.
+  entries.reserve(32);
 }
 
 OpdsParser::~OpdsParser() { destroyXmlParser(parser); }
@@ -88,7 +94,7 @@ OpdsParser::~OpdsParser() { destroyXmlParser(parser); }
 size_t OpdsParser::write(uint8_t c) { return write(&c, 1); }
 
 size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
-  if (errorOccured) return length;
+  if (errorOccured || !parser) return length;
 
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, startElement, endElement);
@@ -124,6 +130,7 @@ size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
 }
 
 void OpdsParser::flush() {
+  if (!parser) return;
   if (XML_Parse(parser, nullptr, 0, XML_TRUE) != XML_STATUS_OK) {
     errorOccured = true;
     destroyXmlParser(parser);
@@ -244,23 +251,23 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     if (!self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {
-      self->entries.push_back(self->currentEntry);
+      self->entries.push_back(std::move(self->currentEntry));
     }
     self->inEntry = false;
   } else if (self->inEntry) {
     if (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr) {
-      if (self->inTitle) self->currentEntry.title = self->currentText;
+      if (self->inTitle) self->currentEntry.title = std::move(self->currentText);
       self->inTitle = false;
     } else if (strcmp(name, "author") == 0 || strstr(name, ":author") != nullptr) {
       self->inAuthor = false;
     } else if (self->inAuthorName && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
-      self->currentEntry.author = self->currentText;
+      self->currentEntry.author = std::move(self->currentText);
       self->inAuthorName = false;
     } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
-      if (self->inId) self->currentEntry.id = self->currentText;
+      if (self->inId) self->currentEntry.id = std::move(self->currentText);
       self->inId = false;
     } else if (strcmp(name, "updated") == 0 || strstr(name, ":updated") != nullptr) {
-      if (self->inUpdated) self->currentEntry.updated = self->currentText;
+      if (self->inUpdated) self->currentEntry.updated = std::move(self->currentText);
       self->inUpdated = false;
     }
   }
