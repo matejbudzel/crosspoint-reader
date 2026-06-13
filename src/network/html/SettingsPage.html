@@ -302,6 +302,7 @@
 
   <div id="wifi-container"></div>
   <div id="opds-container"></div>
+  <div id="ota-container"></div>
 
   <div class="card">
     <p style="text-align: center; color: #95a5a6; margin: 0;">
@@ -838,8 +839,109 @@
     }
   }
 
+  // --- OTA Source Management ---
+  // Dynamically renders an editable list of OTA release sources, communicating
+  // with the /api/ota-sources REST endpoints.
+  let otaSources = [];
+
+  function renderOtaSource(source, idx) {
+    const isNew = idx === -1;
+    const id = isNew ? 'new' : idx;
+    return '<div class="opds-server" id="ota-' + id + '">' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Source Name</span>' +
+        '<span class="setting-control"><input type="text" id="ota-name-' + id + '" value="' + escapeHtml(source.name || '') + '"></span>' +
+      '</div>' +
+      '<div class="setting-row">' +
+        '<span class="setting-name">Firmware URL</span>' +
+        '<span class="setting-control"><input type="text" id="ota-url-' + id + '" value="' + escapeHtml(source.url || '') + '" placeholder="https://"></span>' +
+      '</div>' +
+      '<div class="opds-actions">' +
+        '<button class="btn-small btn-save-server" onclick="saveOtaSource(' + idx + ')">Save</button>' +
+        (isNew ? '' : '<button class="btn-small btn-delete" onclick="deleteOtaSource(' + idx + ')">Delete</button>') +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderOtaSection() {
+    const container = document.getElementById('ota-container');
+    let html = '<div class="card"><h2>OTA Sources</h2>';
+
+    if (otaSources.length === 0) {
+      html += '<p style="color:var(--label-color);text-align:center;">No OTA sources configured</p>';
+    } else {
+      otaSources.forEach(function(source, idx) {
+        html += renderOtaSource(source, idx);
+      });
+    }
+
+    html += '<div style="margin-top:12px;text-align:center;">' +
+      '<button class="btn-small btn-add" onclick="addOtaSource()">+ Add Source</button>' +
+    '</div></div>';
+    container.innerHTML = html;
+  }
+
+  async function loadOtaSources() {
+    try {
+      const resp = await fetch('/api/ota-sources');
+      if (!resp.ok) throw new Error('Failed to load');
+      otaSources = await resp.json();
+      renderOtaSection();
+    } catch (e) {
+      console.error('OTA sources load error:', e);
+    }
+  }
+
+  function addOtaSource() {
+    const container = document.getElementById('ota-container');
+    const card = container.querySelector('.card');
+    const addBtn = card.querySelector('.btn-add').parentElement;
+    // Prevent multiple unsaved new-source forms at once (idx -1 -> id "new")
+    if (document.getElementById('ota-new')) return;
+    addBtn.insertAdjacentHTML('beforebegin', renderOtaSource({name:'',url:''}, -1));
+  }
+
+  async function saveOtaSource(idx) {
+    const id = idx === -1 ? 'new' : idx;
+    const data = {
+      name: document.getElementById('ota-name-' + id).value,
+      url: document.getElementById('ota-url-' + id).value,
+    };
+    if (idx >= 0) data.index = idx;
+
+    try {
+      const resp = await fetch('/api/ota-sources', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      showMessage('OTA source saved!', false);
+      await loadOtaSources();
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+
+  async function deleteOtaSource(idx) {
+    if (!confirm('Delete this OTA source?')) return;
+    try {
+      const resp = await fetch('/api/ota-sources/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: idx})
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      showMessage('OTA source deleted', false);
+      await loadOtaSources();
+    } catch (e) {
+      showMessage('Error: ' + e.message, true);
+    }
+  }
+
   loadWifiNetworks();
   loadOpdsServers();
+  loadOtaSources();
 </script>
 </body>
 </html>
