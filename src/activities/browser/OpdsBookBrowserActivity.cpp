@@ -574,22 +574,12 @@ bool OpdsBookBrowserActivity::hasBookEntries() const {
 }
 
 size_t OpdsBookBrowserActivity::actionRowCount() const {
-  size_t count = 0;
-  if (syncOverlapCount() > 0) {
-    count++;
-  }
-  if (hasBookEntries()) {
-    count++;
-  }
-  return count;
+  return 0;
 }
 
-bool OpdsBookBrowserActivity::isSyncRow(const size_t row) const { return syncOverlapCount() > 0 && row == 0; }
+bool OpdsBookBrowserActivity::isSyncRow(const size_t row) const { return false; }
 
-bool OpdsBookBrowserActivity::isSelectForSyncRow(const size_t row) const {
-  const size_t syncRows = syncOverlapCount() > 0 ? 1 : 0;
-  return hasBookEntries() && row == syncRows;
-}
+bool OpdsBookBrowserActivity::isSelectForSyncRow(const size_t row) const { return false; }
 
 size_t OpdsBookBrowserActivity::totalRowCount() const { return actionRowCount() + entries.size(); }
 

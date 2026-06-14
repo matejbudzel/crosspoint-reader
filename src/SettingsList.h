@@ -245,6 +245,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* fontRe
                             "removeReadBooksFromRecents", StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_MOVE_FINISHED_TO_READ, &CrossPointSettings::moveFinishedToReadFolder,
                             "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM),
+        SettingInfo::String(StrId::STR_REFRESH_DOWNLOAD_URL, SETTINGS.refreshDownloadUrl,
+                            sizeof(SETTINGS.refreshDownloadUrl), "refreshDownloadUrl", StrId::STR_CAT_SYSTEM),
+        SettingInfo::String(StrId::STR_REFRESH_DOWNLOAD_PATH, SETTINGS.refreshDownloadPath,
+                            sizeof(SETTINGS.refreshDownloadPath), "refreshDownloadPath", StrId::STR_CAT_SYSTEM),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(

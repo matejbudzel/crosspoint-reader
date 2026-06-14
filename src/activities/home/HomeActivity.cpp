@@ -18,8 +18,13 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "activities/home/RefreshDownloadActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+
+namespace {
+constexpr const char* REFRESH_DOWNLOAD_SENTINEL_PATH = "__crosspoint_refresh_download__";
+}
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Recents, File transfer, Settings
@@ -35,11 +40,17 @@ int HomeActivity::getMenuItemCount() const {
 void HomeActivity::loadRecentBooks(int maxBooks) {
   recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
-  recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
+  const bool includeRefresh = hasRefreshDownloadSlot() && maxBooks > 0;
+  const int maxActualBooks = includeRefresh ? maxBooks - 1 : maxBooks;
+  recentBooks.reserve((includeRefresh ? 1 : 0) + std::min(static_cast<int>(books.size()), maxActualBooks));
+
+  if (includeRefresh) {
+    recentBooks.push_back({REFRESH_DOWNLOAD_SENTINEL_PATH, tr(STR_REFRESH_DOWNLOAD), "", ""});
+  }
 
   for (const RecentBook& book : books) {
     // Limit to maximum number of recent books
-    if (recentBooks.size() >= maxBooks) {
+    if (static_cast<int>(recentBooks.size()) >= maxBooks) {
       break;
     }
 
@@ -213,7 +224,11 @@ void HomeActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (selectorIndex < recentBooks.size()) {
-      onSelectBook(recentBooks[selectorIndex].path);
+      if (isRefreshDownloadIndex(selectorIndex)) {
+        onRefreshDownload();
+      } else {
+        onSelectBook(recentBooks[selectorIndex].path);
+      }
     } else {
       const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
       switch (indexToMenuItem(menuIndex, hasOpdsServers)) {
@@ -324,6 +339,16 @@ void HomeActivity::render(RenderLock&&) {
 
 void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToReader(path); }
 
+bool HomeActivity::hasRefreshDownloadSlot() const {
+  return SETTINGS.uiTheme == CrossPointSettings::LYRA_3_COVERS && SETTINGS.sdThemeName[0] == '\0' &&
+         SETTINGS.refreshDownloadUrl[0] != '\0' && SETTINGS.refreshDownloadPath[0] != '\0';
+}
+
+bool HomeActivity::isRefreshDownloadIndex(const int index) const {
+  return index >= 0 && index < static_cast<int>(recentBooks.size()) &&
+         recentBooks[index].path == REFRESH_DOWNLOAD_SENTINEL_PATH;
+}
+
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
 void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
@@ -333,3 +358,15 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onRefreshDownload() {
+  coverRendered = false;
+  freeCoverBuffer();
+  startActivityForResult(std::make_unique<RefreshDownloadActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+    RECENT_BOOKS.loadFromFile();
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    loadRecentBooks(metrics.homeRecentBooksCount);
+    coverRendered = false;
+    freeCoverBuffer();
+  });
+}

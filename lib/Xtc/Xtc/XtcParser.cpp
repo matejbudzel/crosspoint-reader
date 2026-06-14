@@ -510,19 +510,20 @@ XtcError XtcParser::loadPageStreaming(uint32_t pageIndex,
     bitmapSize = ((pageHeader.width + 7) / 8) * pageHeader.height;
   }
 
-  // Read in chunks
-  std::vector<uint8_t> chunk(chunkSize);
+  // Read in fixed stack chunks so low-heap render paths can avoid a full-page allocation.
+  uint8_t chunk[512];
+  chunkSize = std::min(chunkSize, sizeof(chunk));
   size_t totalRead = 0;
 
   while (totalRead < bitmapSize) {
     size_t toRead = std::min(chunkSize, bitmapSize - totalRead);
-    size_t bytesRead = m_file.read(chunk.data(), toRead);
+    size_t bytesRead = m_file.read(chunk, toRead);
 
     if (bytesRead == 0) {
       return XtcError::READ_ERROR;
     }
 
-    callback(chunk.data(), bytesRead, totalRead);
+    callback(chunk, bytesRead, totalRead);
     totalRead += bytesRead;
   }
 

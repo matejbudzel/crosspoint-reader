@@ -65,8 +65,11 @@ class HomeActivity final : public Activity {
   void onSettingsOpen();
   void onFileTransferOpen();
   void onOpdsBrowserOpen();
+  void onRefreshDownload();
 
   int getMenuItemCount() const;
+  bool hasRefreshDownloadSlot() const;
+  bool isRefreshDownloadIndex(int index) const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer

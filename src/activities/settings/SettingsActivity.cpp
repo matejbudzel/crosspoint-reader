@@ -25,6 +25,7 @@
 #include "ThemeDownloadActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -253,6 +254,36 @@ void SettingsActivity::toggleCurrentSetting() {
     } else {
       SETTINGS.*(setting.valuePtr) = currentValue + setting.valueRange.step;
     }
+  } else if (setting.type == SettingType::STRING) {
+    std::string currentValue;
+    size_t maxLen = setting.stringMaxLen;
+    if (setting.stringGetter) {
+      currentValue = setting.stringGetter();
+      maxLen = 255;
+    } else if (setting.stringMaxLen > 0) {
+      const char* ptr = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
+      currentValue = ptr;
+    }
+
+    const InputType inputType = setting.nameId == StrId::STR_REFRESH_DOWNLOAD_URL ? InputType::Url : InputType::Text;
+    startActivityForResult(
+        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(setting.nameId), currentValue, maxLen,
+                                                inputType),
+        [this, setting](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            const auto text = std::get<KeyboardResult>(result.data).text;
+            if (setting.stringSetter) {
+              setting.stringSetter(text);
+            } else if (setting.stringMaxLen > 0) {
+              char* ptr = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+              strncpy(ptr, text.c_str(), setting.stringMaxLen - 1);
+              ptr[setting.stringMaxLen - 1] = '\0';
+            }
+            SETTINGS.saveToFile();
+            rebuildSettingsLists();
+          }
+        });
+    return;
   } else if (setting.type == SettingType::ACTION) {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
 
@@ -419,6 +450,16 @@ void SettingsActivity::render(RenderLock&&) {
             }
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+          }
+        } else if (setting.type == SettingType::STRING) {
+          if (setting.stringGetter) {
+            valueText = setting.stringGetter();
+          } else if (setting.stringMaxLen > 0) {
+            const char* ptr = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
+            valueText = ptr;
+          }
+          if (valueText.empty()) {
+            valueText = tr(STR_NOT_SET);
           }
         }
         return valueText;
