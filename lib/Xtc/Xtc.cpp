@@ -11,6 +11,46 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+namespace {
+std::string getThumbSignaturePath(const std::string& cachePath, int height) {
+  return cachePath + "/thumb_" + std::to_string(height) + ".sig";
+}
+
+std::string buildThumbSignature(const xtc::XtcHeader& header, const xtc::PageInfo& pageInfo, uint32_t pageCount,
+                                uint8_t bitDepth, uint64_t sourceSize, int height) {
+  std::string signature;
+  signature.reserve(256);
+  signature += "xtc-thumb-v1\n";
+  signature += "height=" + std::to_string(height) + '\n';
+  signature += "pages=" + std::to_string(pageCount) + '\n';
+  signature += "bitDepth=" + std::to_string(bitDepth) + '\n';
+  signature += "sourceSize=" + std::to_string(sourceSize) + '\n';
+  signature += "pageOffset=" + std::to_string(pageInfo.offset) + '\n';
+  signature += "pageSize=" + std::to_string(pageInfo.size) + '\n';
+  signature += "pageWidth=" + std::to_string(pageInfo.width) + '\n';
+  signature += "pageHeight=" + std::to_string(pageInfo.height) + '\n';
+  signature += "hasThumbnails=" + std::to_string(header.hasThumbnails) + '\n';
+  signature += "thumbOffset=" + std::to_string(header.thumbOffset) + '\n';
+  signature += "pageTableOffset=" + std::to_string(header.pageTableOffset) + '\n';
+  signature += "dataOffset=" + std::to_string(header.dataOffset) + '\n';
+  signature += "chapterOffset=" + std::to_string(header.chapterOffset) + '\n';
+  return signature;
+}
+
+bool thumbSignatureMatches(const std::string& sigPath, const std::string& expected) {
+  if (!Storage.exists(sigPath.c_str())) {
+    return false;
+  }
+
+  const String current = Storage.readFile(sigPath.c_str());
+  return current == expected.c_str();
+}
+
+bool writeThumbSignature(const std::string& sigPath, const std::string& signature) {
+  return Storage.writeFile(sigPath.c_str(), String(signature.c_str()));
+}
+}  // namespace
+
 bool Xtc::load() {
   LOG_DBG("XTC", "Loading XTC: %s", filepath.c_str());
 
@@ -264,11 +304,6 @@ std::string Xtc::getThumbBmpPath() const { return cachePath + "/thumb_[HEIGHT].b
 std::string Xtc::getThumbBmpPath(int height) const { return cachePath + "/thumb_" + std::to_string(height) + ".bmp"; }
 
 bool Xtc::generateThumbBmp(int height) const {
-  // Already generated
-  if (Storage.exists(getThumbBmpPath(height).c_str())) {
-    return true;
-  }
-
   if (!loaded || !parser) {
     LOG_ERR("XTC", "Cannot generate thumb BMP, file not loaded");
     return false;
@@ -291,6 +326,32 @@ bool Xtc::generateThumbBmp(int height) const {
 
   // Get bit depth
   const uint8_t bitDepth = parser->getBitDepth();
+  const xtc::XtcHeader& header = parser->getHeader();
+  const std::string thumbPath = getThumbBmpPath(height);
+  const std::string sigPath = getThumbSignaturePath(cachePath, height);
+  const std::string thumbSignature =
+      buildThumbSignature(header, pageInfo, parser->getPageCount(), bitDepth, parser->getSourceFileSize(), height);
+
+  // Already generated and still matches the source file, no work needed.
+  if (Storage.exists(thumbPath.c_str()) && thumbSignatureMatches(sigPath, thumbSignature)) {
+    return true;
+  }
+
+  // Prefer a pre-rendered thumbnail embedded in the source file when present.
+  if (parser->hasEmbeddedThumbnail()) {
+    HalFile thumbBmp;
+    if (Storage.openFileForWrite("XTC", thumbPath, thumbBmp)) {
+      const xtc::XtcError embeddedError = parser->copyEmbeddedThumbnailTo(thumbBmp);
+      thumbBmp.flush();
+      const bool closedOk = thumbBmp.close();
+      if (embeddedError == xtc::XtcError::OK && closedOk && writeThumbSignature(sigPath, thumbSignature)) {
+        LOG_DBG("XTC", "Copied embedded thumb BMP: %s", thumbPath.c_str());
+        return true;
+      }
+    }
+    Storage.remove(thumbPath.c_str());
+    Storage.remove(sigPath.c_str());
+  }
 
   // Calculate target dimensions for thumbnail (fit within 240x400 Continue Reading card)
   int THUMB_TARGET_WIDTH = height * 0.6;
@@ -303,21 +364,34 @@ bool Xtc::generateThumbBmp(int height) const {
 
   // Only scale down, never up
   if (scale >= 1.0f) {
-    // Page is already small enough, just use cover.bmp
-    // Copy cover.bmp to thumb.bmp
+    // Page is already small enough, just use cover.bmp.
+    // Copy cover.bmp to thumb.bmp.
     if (generateCoverBmp()) {
       HalFile src, dst;
-      if (Storage.openFileForRead("XTC", getCoverBmpPath(), src)) {
-        if (Storage.openFileForWrite("XTC", getThumbBmpPath(height), dst)) {
-          uint8_t buffer[512];
-          while (src.available()) {
-            size_t bytesRead = src.read(buffer, sizeof(buffer));
-            dst.write(buffer, bytesRead);
+      bool copyOk = false;
+      if (Storage.openFileForRead("XTC", getCoverBmpPath(), src) &&
+          Storage.openFileForWrite("XTC", thumbPath, dst)) {
+        uint8_t buffer[512];
+        copyOk = true;
+        while (src.available()) {
+          size_t bytesRead = src.read(buffer, sizeof(buffer));
+          if (bytesRead == 0 || dst.write(buffer, bytesRead) != bytesRead) {
+            copyOk = false;
+            break;
           }
         }
+        dst.flush();
+        copyOk = copyOk && dst.close();
+        src.close();
+        if (copyOk && Storage.exists(thumbPath.c_str()) && writeThumbSignature(sigPath, thumbSignature)) {
+          LOG_DBG("XTC", "Copied cover to thumb (no scaling needed)");
+          return true;
+        }
       }
-      LOG_DBG("XTC", "Copied cover to thumb (no scaling needed)");
-      return Storage.exists(getThumbBmpPath(height).c_str());
+      Storage.remove(thumbPath.c_str());
+      Storage.remove(sigPath.c_str());
+      LOG_DBG("XTC", "Failed to copy cover to thumb (no scaling needed)");
+      return false;
     }
     return false;
   }
@@ -327,6 +401,133 @@ bool Xtc::generateThumbBmp(int height) const {
 
   LOG_DBG("XTC", "Generating thumb BMP: %dx%d -> %dx%d (scale: %.3f)", pageInfo.width, pageInfo.height, thumbWidth,
           thumbHeight, scale);
+
+  // XTCH pages are twice the size of XTC pages. Loading a complete 480x800
+  // page needs 96 KB of contiguous heap, which is not reliably available on
+  // the home screen (especially after its cover buffer has been allocated).
+  // Sample both planes while streaming and retain only thumbnail-sized data.
+  if (bitDepth == 2) {
+    const uint32_t rowSize = (thumbWidth + 31) / 32 * 4;
+    const size_t thumbSize = static_cast<size_t>(rowSize) * thumbHeight;
+    const size_t planeSize = (static_cast<size_t>(pageInfo.width) * pageInfo.height + 7) / 8;
+    const size_t colBytes = (pageInfo.height + 7) / 8;
+
+    auto* srcXToDst = static_cast<int16_t*>(malloc(static_cast<size_t>(pageInfo.width) * sizeof(int16_t)));
+    auto* srcYToDst = static_cast<int16_t*>(malloc(static_cast<size_t>(pageInfo.height) * sizeof(int16_t)));
+    auto* sampledPlane1 = static_cast<uint8_t*>(malloc(thumbSize));
+    auto* thumbData = static_cast<uint8_t*>(malloc(thumbSize));
+    if (!srcXToDst || !srcYToDst || !sampledPlane1 || !thumbData) {
+      LOG_ERR("XTC", "Failed to allocate XTCH thumbnail buffers (%lu bytes)", thumbSize * 2);
+      free(srcXToDst);
+      free(srcYToDst);
+      free(sampledPlane1);
+      free(thumbData);
+      return false;
+    }
+
+    memset(srcXToDst, 0xFF, static_cast<size_t>(pageInfo.width) * sizeof(int16_t));
+    memset(srcYToDst, 0xFF, static_cast<size_t>(pageInfo.height) * sizeof(int16_t));
+    memset(sampledPlane1, 0x00, thumbSize);
+    memset(thumbData, 0xFF, thumbSize);
+
+    const uint32_t scaleInvFp = static_cast<uint32_t>(65536.0f / scale);
+    for (uint16_t dstX = 0; dstX < thumbWidth; dstX++) {
+      uint32_t srcX = (static_cast<uint32_t>(dstX) * scaleInvFp) >> 16;
+      if (srcX >= pageInfo.width) srcX = pageInfo.width - 1;
+      srcXToDst[srcX] = static_cast<int16_t>(dstX);
+    }
+    for (uint16_t dstY = 0; dstY < thumbHeight; dstY++) {
+      uint32_t srcY = (static_cast<uint32_t>(dstY) * scaleInvFp) >> 16;
+      if (srcY >= pageInfo.height) srcY = pageInfo.height - 1;
+      srcYToDst[srcY] = static_cast<int16_t>(dstY);
+    }
+
+    const xtc::XtcError streamError = const_cast<xtc::XtcParser*>(parser.get())->loadPageStreaming(
+        0,
+        [&](const uint8_t* data, size_t size, size_t offset) {
+          for (size_t i = 0; i < size; i++) {
+            const size_t absoluteOffset = offset + i;
+            if (absoluteOffset >= planeSize * 2) return;
+
+            const bool secondPlane = absoluteOffset >= planeSize;
+            const size_t planeOffset = secondPlane ? absoluteOffset - planeSize : absoluteOffset;
+            const size_t colIndex = planeOffset / colBytes;
+            if (colIndex >= pageInfo.width) continue;
+
+            const uint16_t srcX = pageInfo.width - 1 - static_cast<uint16_t>(colIndex);
+            const int16_t dstX = srcXToDst[srcX];
+            if (dstX < 0) continue;
+
+            const size_t byteInCol = planeOffset % colBytes;
+            for (uint8_t bit = 0; bit < 8; bit++) {
+              const size_t srcY = byteInCol * 8 + bit;
+              if (srcY >= pageInfo.height) break;
+              const int16_t dstY = srcYToDst[srcY];
+              if (dstY < 0) continue;
+
+              const uint8_t planeBit = (data[i] >> (7 - bit)) & 1;
+              const size_t byteIndex = static_cast<size_t>(dstY) * rowSize + static_cast<uint16_t>(dstX) / 8;
+              const uint8_t bitMask = 1 << (7 - (static_cast<uint16_t>(dstX) % 8));
+              if (!secondPlane) {
+                if (planeBit) sampledPlane1[byteIndex] |= bitMask;
+                continue;
+              }
+
+              const uint8_t bit1 = (sampledPlane1[byteIndex] & bitMask) ? 1 : 0;
+              const uint8_t pixelValue = (bit1 << 1) | planeBit;
+              const uint8_t grayValue = (3 - pixelValue) * 85;
+              uint32_t hash = static_cast<uint32_t>(dstX) * 374761393u +
+                              static_cast<uint32_t>(dstY) * 668265263u;
+              hash = (hash ^ (hash >> 13)) * 1274126177u;
+              const int threshold = static_cast<int>(hash >> 24);
+              const int adjustedThreshold = 128 + ((threshold - 128) / 2);
+              if (grayValue < adjustedThreshold) thumbData[byteIndex] &= ~bitMask;
+            }
+          }
+        });
+
+    free(srcXToDst);
+    free(srcYToDst);
+    free(sampledPlane1);
+
+    if (streamError != xtc::XtcError::OK) {
+      LOG_ERR("XTC", "Failed to stream XTCH cover page for thumb: %s", xtc::errorToString(streamError));
+      free(thumbData);
+      return false;
+    }
+
+    HalFile thumbBmp;
+    if (!Storage.openFileForWrite("XTC", thumbPath, thumbBmp)) {
+      LOG_DBG("XTC", "Failed to create thumb BMP file");
+      free(thumbData);
+      return false;
+    }
+
+    BmpHeader bmpHeader;
+    createBmpHeader(&bmpHeader, thumbWidth, thumbHeight, BmpRowOrder::TopDown);
+    const bool writeOk =
+        thumbBmp.write(reinterpret_cast<const uint8_t*>(&bmpHeader), sizeof(bmpHeader)) == sizeof(bmpHeader) &&
+        thumbBmp.write(thumbData, thumbSize) == thumbSize;
+    thumbBmp.flush();
+    const bool closedOk = thumbBmp.close();
+    free(thumbData);
+    if (!writeOk || !closedOk) {
+      Storage.remove(thumbPath.c_str());
+      Storage.remove(sigPath.c_str());
+      LOG_ERR("XTC", "Failed to write XTCH thumbnail BMP");
+      return false;
+    }
+
+    if (!writeThumbSignature(sigPath, thumbSignature)) {
+      Storage.remove(thumbPath.c_str());
+      Storage.remove(sigPath.c_str());
+      LOG_ERR("XTC", "Failed to write XTCH thumbnail signature");
+      return false;
+    }
+
+    LOG_DBG("XTC", "Generated streamed XTCH thumb BMP (%dx%d): %s", thumbWidth, thumbHeight, thumbPath.c_str());
+    return true;
+  }
 
   // Allocate buffer for page data
   size_t bitmapSize;
@@ -351,7 +552,7 @@ bool Xtc::generateThumbBmp(int height) const {
 
   // Create thumbnail BMP file - use 1-bit format for fast home screen rendering (no gray passes)
   HalFile thumbBmp;
-  if (!Storage.openFileForWrite("XTC", getThumbBmpPath(height), thumbBmp)) {
+  if (!Storage.openFileForWrite("XTC", thumbPath, thumbBmp)) {
     LOG_DBG("XTC", "Failed to create thumb BMP file");
     free(pageBuffer);
     return false;
@@ -360,7 +561,13 @@ bool Xtc::generateThumbBmp(int height) const {
   // Write 1-bit BMP header (top-down row order)
   BmpHeader bmpHeader;
   createBmpHeader(&bmpHeader, thumbWidth, thumbHeight, BmpRowOrder::TopDown);
-  thumbBmp.write(reinterpret_cast<const uint8_t*>(&bmpHeader), sizeof(bmpHeader));
+  if (thumbBmp.write(reinterpret_cast<const uint8_t*>(&bmpHeader), sizeof(bmpHeader)) != sizeof(bmpHeader)) {
+    free(pageBuffer);
+    Storage.remove(thumbPath.c_str());
+    Storage.remove(sigPath.c_str());
+    LOG_ERR("XTC", "Failed to write thumb BMP header");
+    return false;
+  }
 
   const uint32_t rowSize = (thumbWidth + 31) / 32 * 4;
 
@@ -470,11 +677,33 @@ bool Xtc::generateThumbBmp(int height) const {
     }
 
     // Write row (already padded to 4-byte boundary by rowSize)
-    thumbBmp.write(rowBuffer, rowSize);
+    if (thumbBmp.write(rowBuffer, rowSize) != rowSize) {
+      free(rowBuffer);
+      free(pageBuffer);
+      Storage.remove(thumbPath.c_str());
+      Storage.remove(sigPath.c_str());
+      LOG_ERR("XTC", "Failed to write thumb BMP row");
+      return false;
+    }
   }
 
   free(rowBuffer);
   free(pageBuffer);
+
+  thumbBmp.flush();
+  if (!thumbBmp.close()) {
+    Storage.remove(thumbPath.c_str());
+    Storage.remove(sigPath.c_str());
+    LOG_ERR("XTC", "Failed to close thumb BMP");
+    return false;
+  }
+
+  if (!writeThumbSignature(sigPath, thumbSignature)) {
+    Storage.remove(thumbPath.c_str());
+    Storage.remove(sigPath.c_str());
+    LOG_ERR("XTC", "Failed to write thumb signature");
+    return false;
+  }
 
   LOG_DBG("XTC", "Generated thumb BMP (%dx%d): %s", thumbWidth, thumbHeight, getThumbBmpPath(height).c_str());
   return true;

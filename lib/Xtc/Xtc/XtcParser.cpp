@@ -7,6 +7,8 @@
 
 #include "XtcParser.h"
 
+#include <algorithm>
+#include <Bitmap.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -14,6 +16,220 @@
 #include <cstring>
 
 namespace xtc {
+
+namespace {
+uint64_t getEmbeddedThumbnailEndOffset(const XtcHeader& header, uint64_t fileSize) {
+  uint64_t endOffset = fileSize;
+  const auto consider = [&](uint64_t offset) {
+    if (offset > header.thumbOffset && offset < endOffset) {
+      endOffset = offset;
+    }
+  };
+
+  consider(header.metadataOffset);
+  consider(header.pageTableOffset);
+  consider(header.dataOffset);
+  consider(header.chapterOffset);
+  return endOffset;
+}
+
+bool writeAll(Print& out, const uint8_t* data, size_t size) {
+  return out.write(data, size) == size;
+}
+
+bool writeEmbeddedThumbRowCopy(Print& out, const uint8_t* bitmapData, uint16_t width, uint16_t height) {
+  const size_t srcRowSize = (width + 7) / 8;
+  const size_t rowSize = ((width + 31) / 32) * 4;
+  const size_t paddingSize = rowSize - srcRowSize;
+  const uint8_t padding[4] = {0, 0, 0, 0};
+
+  for (uint16_t y = 0; y < height; y++) {
+    const uint8_t* row = bitmapData + static_cast<size_t>(y) * srcRowSize;
+    if (!writeAll(out, row, srcRowSize)) {
+      return false;
+    }
+    if (paddingSize > 0 && !writeAll(out, padding, paddingSize)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool writeEmbeddedThumbFromTwoBit(Print& out, const uint8_t* bitmapData, uint16_t width, uint16_t height) {
+  const size_t rowSize = ((width + 31) / 32) * 4;
+  const size_t planeSize = (static_cast<size_t>(width) * height + 7) / 8;
+  const size_t colBytes = (height + 7) / 8;
+
+  auto* thumbData = static_cast<uint8_t*>(malloc(rowSize * height));
+  if (!thumbData) {
+    free(thumbData);
+    return false;
+  }
+
+  memset(thumbData, 0xFF, rowSize * height);
+
+  const uint8_t* plane1 = bitmapData;
+  const uint8_t* plane2 = bitmapData + planeSize;
+  for (uint16_t srcY = 0; srcY < height; srcY++) {
+    for (uint16_t srcX = 0; srcX < width; srcX++) {
+      const size_t colIndex = width - 1 - srcX;
+      const size_t byteInCol = srcY / 8;
+      const size_t bitInByte = 7 - (srcY % 8);
+      const size_t byteOffset = colIndex * colBytes + byteInCol;
+      if (byteOffset >= planeSize) {
+        continue;
+      }
+
+      const uint8_t bit1 = (plane1[byteOffset] >> bitInByte) & 1;
+      const uint8_t bit2 = (plane2[byteOffset] >> bitInByte) & 1;
+      const uint8_t pixelValue = (bit1 << 1) | bit2;
+      const uint8_t grayValue = (3 - pixelValue) * 85;
+
+      uint32_t hash = static_cast<uint32_t>(srcX) * 374761393u + static_cast<uint32_t>(srcY) * 668265263u;
+      hash = (hash ^ (hash >> 13)) * 1274126177u;
+      const int threshold = static_cast<int>(hash >> 24);
+      const int adjustedThreshold = 128 + ((threshold - 128) / 2);
+
+      if (grayValue < adjustedThreshold) {
+        const size_t byteIndex = static_cast<size_t>(srcY) * rowSize + static_cast<size_t>(srcX) / 8;
+        const uint8_t bitMask = 1 << (7 - (srcX % 8));
+        thumbData[byteIndex] &= ~bitMask;
+      }
+    }
+  }
+
+  const bool ok = writeAll(out, thumbData, rowSize * height);
+  free(thumbData);
+  return ok;
+}
+}  // namespace
+
+bool XtcParser::hasEmbeddedThumbnail() const {
+  return m_header.hasThumbnails == 1 && m_header.thumbOffset >= sizeof(XtcHeader);
+}
+
+uint64_t XtcParser::getSourceFileSize() const {
+  if (!m_isOpen) {
+    return 0;
+  }
+
+  auto& file = const_cast<HalFile&>(m_file);
+  if (!const_cast<XtcParser*>(this)->ensureFileOpen()) {
+    return 0;
+  }
+
+  return file.fileSize64();
+}
+
+XtcError XtcParser::copyEmbeddedThumbnailTo(Print& out) const {
+  if (!m_isOpen) {
+    return XtcError::FILE_NOT_FOUND;
+  }
+
+  if (!hasEmbeddedThumbnail()) {
+    return XtcError::PAGE_OUT_OF_RANGE;
+  }
+
+  auto& file = const_cast<HalFile&>(m_file);
+  if (!const_cast<XtcParser*>(this)->ensureFileOpen()) {
+    return XtcError::FILE_NOT_FOUND;
+  }
+
+  const uint64_t fileSize = file.fileSize64();
+  const uint64_t thumbOffset = m_header.thumbOffset;
+  const uint64_t thumbEnd = getEmbeddedThumbnailEndOffset(m_header, fileSize);
+  if (thumbOffset >= fileSize || thumbEnd <= thumbOffset) {
+    return XtcError::CORRUPTED_HEADER;
+  }
+
+  if (!file.seek64(thumbOffset)) {
+    return XtcError::READ_ERROR;
+  }
+
+  uint8_t magic[2] = {0, 0};
+  if (file.read(magic, sizeof(magic)) != sizeof(magic)) {
+    return XtcError::READ_ERROR;
+  }
+
+  // Some generators may store the thumbnail as a BMP blob directly. In that
+  // case we can just copy it into the cache without any conversion.
+  if (magic[0] == 'B' && magic[1] == 'M') {
+    if (!file.seek64(thumbOffset)) {
+      return XtcError::READ_ERROR;
+    }
+
+    uint8_t chunk[512];
+    uint64_t remaining = thumbEnd - thumbOffset;
+    while (remaining > 0) {
+      const size_t toRead = static_cast<size_t>(std::min<uint64_t>(remaining, sizeof(chunk)));
+      const size_t bytesRead = file.read(chunk, toRead);
+      if (bytesRead == 0) {
+        return XtcError::READ_ERROR;
+      }
+      if (!writeAll(out, chunk, bytesRead)) {
+        return XtcError::WRITE_ERROR;
+      }
+      remaining -= bytesRead;
+    }
+
+    return XtcError::OK;
+  }
+
+  if (!file.seek64(thumbOffset)) {
+    return XtcError::READ_ERROR;
+  }
+
+  XtgPageHeader thumbHeader;
+  size_t headerRead = file.read(reinterpret_cast<uint8_t*>(&thumbHeader), sizeof(XtgPageHeader));
+  if (headerRead != sizeof(XtgPageHeader)) {
+    return XtcError::READ_ERROR;
+  }
+
+  const bool isTwoBit = thumbHeader.magic == XTH_MAGIC;
+  if (thumbHeader.magic != XTG_MAGIC && thumbHeader.magic != XTH_MAGIC) {
+    return XtcError::INVALID_MAGIC;
+  }
+
+  if (thumbHeader.width == 0 || thumbHeader.height == 0) {
+    return XtcError::CORRUPTED_HEADER;
+  }
+
+  size_t bitmapSize;
+  if (isTwoBit) {
+    bitmapSize = ((static_cast<size_t>(thumbHeader.width) * thumbHeader.height + 7) / 8) * 2;
+  } else {
+    bitmapSize = ((static_cast<size_t>(thumbHeader.width) + 7) / 8) * thumbHeader.height;
+  }
+
+  const uint64_t expectedEnd = thumbOffset + sizeof(XtgPageHeader) + bitmapSize;
+  if (expectedEnd > thumbEnd) {
+    return XtcError::CORRUPTED_HEADER;
+  }
+
+  std::vector<uint8_t> bitmapData(bitmapSize);
+  if (file.read(bitmapData.data(), bitmapSize) != bitmapSize) {
+    return XtcError::READ_ERROR;
+  }
+
+  BmpHeader bmpHeader;
+  createBmpHeader(&bmpHeader, thumbHeader.width, thumbHeader.height, BmpRowOrder::TopDown);
+  if (!writeAll(out, reinterpret_cast<const uint8_t*>(&bmpHeader), sizeof(bmpHeader))) {
+    return XtcError::WRITE_ERROR;
+  }
+
+  if (isTwoBit) {
+    if (!writeEmbeddedThumbFromTwoBit(out, bitmapData.data(), thumbHeader.width, thumbHeader.height)) {
+      return XtcError::WRITE_ERROR;
+    }
+  } else {
+    if (!writeEmbeddedThumbRowCopy(out, bitmapData.data(), thumbHeader.width, thumbHeader.height)) {
+      return XtcError::WRITE_ERROR;
+    }
+  }
+
+  return XtcError::OK;
+}
 
 XtcParser::XtcParser()
     : m_isOpen(false),

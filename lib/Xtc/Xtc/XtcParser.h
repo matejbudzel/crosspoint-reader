@@ -43,6 +43,8 @@ class XtcParser {
   uint16_t getWidth() const { return m_defaultWidth; }
   uint16_t getHeight() const { return m_defaultHeight; }
   uint8_t getBitDepth() const { return m_bitDepth; }  // 1 = XTC/XTG, 2 = XTCH/XTH
+  bool hasEmbeddedThumbnail() const;
+  uint64_t getSourceFileSize() const;
 
   // Page information
   bool getPageInfo(uint32_t pageIndex, PageInfo& info);
@@ -73,6 +75,16 @@ class XtcParser {
   // Get title/author from metadata
   std::string getTitle() const { return m_title; }
   std::string getAuthor() const { return m_author; }
+
+  /**
+   * Copy the embedded thumbnail into a BMP output stream.
+   *
+   * Returns OK if the file has an embedded thumbnail and it was written
+   * successfully. Returns FILE_NOT_FOUND / READ_ERROR / INVALID_MAGIC on
+   * parsing failures and PAGE_OUT_OF_RANGE when the file simply has no
+   * thumbnail section.
+   */
+  XtcError copyEmbeddedThumbnailTo(Print& out) const;
 
   bool hasChapters() const { return m_hasChapters; }
   const std::vector<ChapterInfo>& getChapters();
