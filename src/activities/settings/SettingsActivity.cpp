@@ -10,6 +10,7 @@
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
+#include "DigestSettingsActivity.h"
 #include "FontDownloadActivity.h"
 #include "FontSelectionActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -24,6 +25,7 @@
 #include "StatusBarSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -63,6 +65,7 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_DIGEST_SETTINGS, SettingAction::DigestSettings));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OTA_SOURCES, SettingAction::OtaSources));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
@@ -228,6 +231,36 @@ void SettingsActivity::toggleCurrentSetting() {
     } else {
       SETTINGS.*(setting.valuePtr) = currentValue + setting.valueRange.step;
     }
+  } else if (setting.type == SettingType::STRING) {
+    std::string currentValue;
+    size_t maxLen = setting.stringMaxLen;
+    if (setting.stringGetter) {
+      currentValue = setting.stringGetter();
+      maxLen = 255;
+    } else if (setting.stringMaxLen > 0) {
+      const char* ptr = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
+      currentValue = ptr;
+    }
+
+    const InputType inputType = setting.nameId == StrId::STR_REFRESH_DOWNLOAD_URL ? InputType::Url : InputType::Text;
+    startActivityForResult(
+        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(setting.nameId), currentValue, maxLen,
+                                                inputType),
+        [this, setting](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            const auto text = std::get<KeyboardResult>(result.data).text;
+            if (setting.stringSetter) {
+              setting.stringSetter(text);
+            } else if (setting.stringMaxLen > 0) {
+              char* ptr = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+              strncpy(ptr, text.c_str(), setting.stringMaxLen - 1);
+              ptr[setting.stringMaxLen - 1] = '\0';
+            }
+            SETTINGS.saveToFile();
+            rebuildSettingsLists();
+          }
+        });
+    return;
   } else if (setting.type == SettingType::ACTION) {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
 
@@ -237,6 +270,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::CustomiseStatusBar:
         startActivityForResult(std::make_unique<StatusBarSettingsActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::DigestSettings:
+        startActivityForResult(std::make_unique<DigestSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::KOReaderSync:
         startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
@@ -378,6 +414,16 @@ void SettingsActivity::render(RenderLock&&) {
             }
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+          }
+        } else if (setting.type == SettingType::STRING) {
+          if (setting.stringGetter) {
+            valueText = setting.stringGetter();
+          } else if (setting.stringMaxLen > 0) {
+            const char* ptr = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
+            valueText = ptr;
+          }
+          if (valueText.empty()) {
+            valueText = tr(STR_NOT_SET);
           }
         }
         return valueText;

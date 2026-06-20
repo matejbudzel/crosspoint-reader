@@ -89,7 +89,9 @@ The File Manager page can:
 - Download files
 - Rename files
 - Move files into existing folders
-- Delete one or more selected files or empty folders
+- Delete one or more selected files or folders. Non-empty folders and
+  hidden/system paths require an extra confirmation and are then deleted
+  recursively.
 
 Existing files with the same name are overwritten by uploads. When EPUB files
 are overwritten, moved, renamed, or deleted through the web server, the matching

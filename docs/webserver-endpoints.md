@@ -178,11 +178,12 @@ cleared before the move.
 
 ### `POST /delete`
 
-Deletes one or more files or empty folders.
+Deletes one or more files or folders.
 
 ```bash
 curl -X POST -d "path=/Books/mybook.epub" http://crosspoint.local/delete
 curl -X POST -d 'paths=["/Books/old.epub","/OldFolder"]' http://crosspoint.local/delete
+curl -X POST -d 'paths=["/.crosspoint"]&force=true' http://crosspoint.local/delete
 ```
 
 Form parameters:
@@ -191,9 +192,12 @@ Form parameters:
 |-----------|----------|-------------|
 | `path` | Yes, unless `paths` is provided | Single path to delete |
 | `paths` | Yes, unless `path` is provided | JSON array of paths to delete |
+| `force` | No | Set to `true` after confirmation to delete non-empty folders and hidden/system paths |
 
-Protected items cannot be deleted. Non-empty folders are rejected. EPUB cache
-data for deleted files is cleared.
+Root (`/`) cannot be deleted. Hidden/system paths and non-empty folders return
+`409 Conflict` unless `force=true` is provided. Forced deletion removes
+non-empty folders recursively and can remove system data. EPUB cache data for
+deleted files is cleared.
 
 ## Settings API
 

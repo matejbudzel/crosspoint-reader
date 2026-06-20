@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -32,6 +34,7 @@ namespace {
 constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
+constexpr size_t DELETE_NAME_BUFFER_SIZE = 500;
 
 // Static pointer for WebSocket callback (WebSocketsServer requires C-style callback)
 CrossPointWebServer* wsInstance = nullptr;
@@ -78,6 +81,110 @@ bool isProtectedItemName(const String& name) {
     }
   }
   return false;
+}
+
+bool isProtectedPath(const String& path) {
+  int start = 0;
+  while (start < static_cast<int>(path.length())) {
+    if (path.charAt(start) == '/') {
+      start++;
+      continue;
+    }
+
+    int end = path.indexOf('/', start);
+    if (end == -1) {
+      end = path.length();
+    }
+
+    if (isProtectedItemName(path.substring(start, end))) {
+      return true;
+    }
+
+    start = end + 1;
+  }
+
+  return false;
+}
+
+bool isDirectoryEmpty(HalFile& dir) {
+  dir.rewindDirectory();
+  HalFile entry = dir.openNextFile();
+  if (entry) {
+    entry.close();
+    return false;
+  }
+  return true;
+}
+
+bool removeFileOrDirectoryRecursive(const String& path) {
+  HalFile file = Storage.open(path.c_str());
+  if (!file) {
+    LOG_ERR("WEB", "Failed to open for delete: %s", path.c_str());
+    return false;
+  }
+
+  if (!file.isDirectory()) {
+    file.close();
+    clearBookCache(path.c_str());
+    return Storage.remove(path.c_str());
+  }
+  file.close();
+
+  std::vector<std::pair<String, bool>> stack;
+  stack.reserve(16);
+  stack.push_back({path, false});
+  char nameBuffer[DELETE_NAME_BUFFER_SIZE];
+
+  while (!stack.empty()) {
+    auto [currentPath, postOrder] = std::move(stack.back());
+    stack.pop_back();
+
+    if (postOrder) {
+      if (!Storage.rmdir(currentPath.c_str())) {
+        LOG_ERR("WEB", "Failed to rmdir: %s", currentPath.c_str());
+        return false;
+      }
+      continue;
+    }
+
+    HalFile dir = Storage.open(currentPath.c_str());
+    if (!dir || !dir.isDirectory()) {
+      LOG_ERR("WEB", "Failed to open dir for delete: %s", currentPath.c_str());
+      return false;
+    }
+
+    stack.push_back({currentPath, true});
+    dir.rewindDirectory();
+
+    for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+      entry.getName(nameBuffer, sizeof(nameBuffer));
+      if (strcmp(nameBuffer, ".") == 0 || strcmp(nameBuffer, "..") == 0) {
+        entry.close();
+        continue;
+      }
+
+      String entryPath = currentPath;
+      if (!entryPath.endsWith("/")) {
+        entryPath += "/";
+      }
+      entryPath += nameBuffer;
+
+      const bool isDir = entry.isDirectory();
+      entry.close();
+
+      if (isDir) {
+        stack.push_back({entryPath, false});
+      } else {
+        clearBookCache(entryPath.c_str());
+        if (!Storage.remove(entryPath.c_str())) {
+          LOG_ERR("WEB", "Failed to remove file: %s", entryPath.c_str());
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
 }
 }  // namespace
 
@@ -1019,18 +1126,18 @@ void CrossPointWebServer::handleDelete() const {
     return;
   }
 
-  // Iterate over paths and delete each item
-  bool allSuccess = true;
-  String failedItems;
+  const String forceArg = server->arg("force");
+  const bool forceDelete = forceArg == "1" || forceArg == "true" || forceArg == "yes";
+  std::vector<String> normalizedPaths;
+  normalizedPaths.reserve(paths.size());
 
   for (const auto& p : paths) {
     auto itemPath = p.as<String>();
 
     // Validate path
     if (itemPath.isEmpty() || itemPath == "/") {
-      failedItems += itemPath + " (cannot delete root); ";
-      allSuccess = false;
-      continue;
+      server->send(400, "text/plain", "Cannot delete root");
+      return;
     }
 
     // Ensure path starts with /
@@ -1038,60 +1145,53 @@ void CrossPointWebServer::handleDelete() const {
       itemPath = "/" + itemPath;
     }
 
-    // Security check: prevent deletion of protected items
-    const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
+    normalizedPaths.push_back(itemPath);
+  }
 
-    // Hidden/system files are protected
-    if (itemName.startsWith(".")) {
-      failedItems += itemPath + " (hidden/system file); ";
-      allSuccess = false;
-      continue;
-    }
+  if (normalizedPaths.empty()) {
+    server->send(400, "text/plain", "No valid paths provided");
+    return;
+  }
 
-    // Check against explicitly protected items
-    bool isProtected = false;
-    for (const auto* item : HIDDEN_ITEMS) {
-      if (itemName.equals(item)) {
-        isProtected = true;
-        break;
-      }
-    }
-    if (isProtected) {
-      failedItems += itemPath + " (protected file); ";
-      allSuccess = false;
-      continue;
+  // Preflight first so a mixed selection cannot be partially deleted before
+  // the UI asks for confirmation on dangerous targets.
+  String failedItems;
+  String dangerousItems;
+  for (const auto& itemPath : normalizedPaths) {
+    if (isProtectedPath(itemPath)) {
+      dangerousItems += itemPath + " (hidden/system path); ";
     }
 
     // Check if item exists
     if (!Storage.exists(itemPath.c_str())) {
       failedItems += itemPath + " (not found); ";
-      allSuccess = false;
       continue;
     }
 
-    // Decide whether it's a directory or file by opening it
-    bool success = false;
     HalFile f = Storage.open(itemPath.c_str());
     if (f && f.isDirectory()) {
-      // For folders, ensure empty before removing
-      HalFile entry = f.openNextFile();
-      if (entry) {
-        entry.close();
-        f.close();
-        failedItems += itemPath + " (folder not empty); ";
-        allSuccess = false;
-        continue;
+      if (!isDirectoryEmpty(f)) {
+        dangerousItems += itemPath + " (folder not empty); ";
       }
-      f.close();
-      success = Storage.rmdir(itemPath.c_str());
-    } else {
-      // It's a file (or couldn't open as dir) — remove file
-      if (f) f.close();
-      success = Storage.remove(itemPath.c_str());
-      clearBookCache(itemPath.c_str());
     }
+    if (f) f.close();
+  }
 
-    if (!success) {
+  if (!failedItems.isEmpty()) {
+    server->send(500, "text/plain", "Failed to delete some items: " + failedItems);
+    return;
+  }
+
+  if (!dangerousItems.isEmpty() && !forceDelete) {
+    server->send(409, "text/plain", "Confirmation required for: " + dangerousItems);
+    return;
+  }
+
+  bool allSuccess = true;
+  failedItems = "";
+
+  for (const auto& itemPath : normalizedPaths) {
+    if (!removeFileOrDirectoryRecursive(itemPath)) {
       failedItems += itemPath + " (deletion failed); ";
       allSuccess = false;
     }

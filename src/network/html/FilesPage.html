@@ -1156,6 +1156,16 @@
       font-weight: 600;
       margin: 10px 0;
     }
+    .delete-danger-warning {
+      display: none;
+      color: #9f3a38;
+      background: #fff0f0;
+      border: 1px solid #f0b4b4;
+      border-radius: 4px;
+      padding: 10px;
+      margin: 10px 0;
+      word-break: break-word;
+    }
     .delete-item-name {
       font-weight: 600;
       color: var(--title-color);
@@ -1751,8 +1761,9 @@
     <div class="folder-form">
       <p class="delete-warning">⚠️ This action cannot be undone!</p>
       <p class="file-info">Are you sure you want to delete the following item(s)?</p>
+      <p class="delete-danger-warning" id="deleteDangerWarning"></p>
       <div id="deleteItemList" style="max-height:240px; overflow:auto; margin-bottom:10px;"></div>
-      <button class="delete-btn-confirm" onclick="confirmDelete()">Delete</button>
+      <button class="delete-btn-confirm" id="deleteConfirmButton" onclick="confirmDelete()">Delete</button>
       <button class="delete-btn-cancel" onclick="closeDeleteModal()">Cancel</button>
     </div>
   </div>
@@ -2966,9 +2977,15 @@
   }
 
   let deleteItemsGlobal = [];
+  let deleteForceGlobal = false;
 
   function openDeleteModalForItems(items) {
     deleteItemsGlobal = items;
+    deleteForceGlobal = false;
+    const warning = document.getElementById('deleteDangerWarning');
+    warning.style.display = 'none';
+    warning.textContent = '';
+    document.getElementById('deleteConfirmButton').textContent = 'Delete';
     const listEl = document.getElementById('deleteItemList');
     listEl.innerHTML = '';
     items.forEach(it => {
@@ -2982,6 +2999,7 @@
 
   function closeDeleteModal() {
     document.getElementById('deleteModal').classList.remove('open');
+    deleteForceGlobal = false;
   }
 
   function confirmDelete() {
@@ -2997,7 +3015,10 @@
       return p;
     });
 
-    const body = 'paths=' + encodeURIComponent(JSON.stringify(paths));
+    let body = 'paths=' + encodeURIComponent(JSON.stringify(paths));
+    if (deleteForceGlobal) {
+      body += '&force=true';
+    }
     fetch('/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -3005,6 +3026,13 @@
     }).then(async res => {
       if (res.ok) {
         window.location.reload();
+      } else if (res.status === 409) {
+        const text = await res.text();
+        deleteForceGlobal = true;
+        const warning = document.getElementById('deleteDangerWarning');
+        warning.textContent = text + ' Deleting these paths may remove system data or recursively delete folder contents. Click Delete Anyway to confirm.';
+        warning.style.display = 'block';
+        document.getElementById('deleteConfirmButton').textContent = 'Delete Anyway';
       } else {
         const text = await res.text();
         alert('Failed to delete: ' + text);

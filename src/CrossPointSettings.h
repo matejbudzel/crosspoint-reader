@@ -233,6 +233,10 @@ class CrossPointSettings {
   char opdsServerUrl[128] = "";
   char opdsUsername[64] = "";
   char opdsPassword[64] = "";
+  // Lyra Extended home refresh action
+  char refreshDownloadUrl[256] = "";
+  char refreshDownloadPath[128] = "";
+  char refreshDownloadImagePath[128] = "";
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Long-press page turn button behavior
